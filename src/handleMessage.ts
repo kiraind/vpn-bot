@@ -12,9 +12,14 @@ import { checkMembership } from './checkMembership'
 import { statePath } from './config'
 
 export async function handleMessage(msg: TelegramBot.Message) {
+  const chatId = msg.chat.id;
   const fromId = msg.from?.id;
 
   if(!fromId) {
+    return
+  }
+
+  if(fromId !== chatId) {
     return
   }
   
