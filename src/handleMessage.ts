@@ -134,20 +134,20 @@ export async function handleMessage(msg: TelegramBot.Message) {
     )
   } else if(text.startsWith('/start') || text.startsWith('/info')) {
     const userDevices = devices.filter(client => client.name.startsWith(`${username}:`) && client.enabled)
-    const deviceList = userDevices.map(device => `📲 \`${device.name.split(':')[1]}\`, ${prettyBytes(device.transferRx + device.transferTx)} трафика`).join('\n')
+    const deviceList = userDevices.map(device => `📲 \`${device.name.split(':')[1]}\`, ${prettyBytes(device.transferRx + device.transferTx).replace('.', '\\.')} трафика`).join('\n')
     
     const allUserDevices = devices.filter(client => client.name.startsWith(`${username}:`))
     const dataUsage = allUserDevices.reduce((sum, device) => sum + device.transferRx + device.transferTx, 0)
 
     await bot.sendMessage(
       fromId,
-      userDevices.length > 0 ? (
+      (userDevices.length > 0 ? (
         `Твои устройства:\n\n${deviceList}\n`
       ) : (
         `У тебя сейчас нет активных устройств\n`
-      ) +
+      )) +
       `\n` +
-      `Всего трафика использовано ${prettyBytes(dataUsage).replace('.', '\\.')}\n` +
+      `Всего использовано ${prettyBytes(dataUsage).replace('.', '\\.')} трафика\n` +
       `\n` +
       `Доступные команды:\n` +
       `\n` +
