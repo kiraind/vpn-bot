@@ -1,3 +1,5 @@
+import fs from 'fs/promises'
+import path from 'path'
 import TelegramBot from 'node-telegram-bot-api'
 import prettyBytes from 'pretty-bytes-es5'
 import { bot } from './bot'
@@ -7,6 +9,7 @@ import { getClientConfig } from './api/getClientConfig'
 import { createClient } from './api/createClient'
 import { disableClient } from './api/disableClient'
 import { checkMembership } from './checkMembership'
+import { statePath } from './config'
 
 export async function handleMessage(msg: TelegramBot.Message) {
   const fromId = msg.from?.id;
@@ -29,11 +32,22 @@ export async function handleMessage(msg: TelegramBot.Message) {
     return
   }
 
+  
   const text = msg.text;
-
+  
   if(!text) {
     return
   }
+
+  await bot.sendChatAction(fromId, 'typing')
+
+  // save to users list
+  const usersPath = path.join(statePath, 'users.json')
+  const users: Record<string, number> = JSON.parse(
+    await fs.readFile(usersPath, 'utf8')
+  )
+  users[username] = fromId;
+  await fs.writeFile(usersPath, JSON.stringify(users), 'utf8')
 
   const devices = await getClients()
 
@@ -51,8 +65,6 @@ export async function handleMessage(msg: TelegramBot.Message) {
       await bot.sendMessage(fromId, 'Устройство с таким именем уже есть')
       return
     }
-
-    await bot.sendChatAction(fromId, 'typing')
 
     await createClient(fullId)
 
