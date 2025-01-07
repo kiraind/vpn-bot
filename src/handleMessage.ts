@@ -147,7 +147,7 @@ export async function handleMessage(msg: TelegramBot.Message) {
         `У тебя сейчас нет активных устройств\n`
       ) +
       `\n` +
-      `Всего трафика использовано ${prettyBytes(dataUsage)}\n` +
+      `Всего трафика использовано ${prettyBytes(dataUsage).replace('.', '\\.')}\n` +
       `\n` +
       `Доступные команды:\n` +
       `\n` +
