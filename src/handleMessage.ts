@@ -1,12 +1,12 @@
 import TelegramBot from 'node-telegram-bot-api'
 import prettyBytes from 'pretty-bytes-es5'
 import { bot } from './bot'
-import { tgChatId } from './config'
 import { getClients } from './api/getClients'
 import { getClientConfigQR } from './api/getClientConfigQR'
 import { getClientConfig } from './api/getClientConfig'
 import { createClient } from './api/createClient'
 import { disableClient } from './api/disableClient'
+import { checkMembership } from './checkMembership'
 
 export async function handleMessage(msg: TelegramBot.Message) {
   const fromId = msg.from?.id;
@@ -15,15 +15,9 @@ export async function handleMessage(msg: TelegramBot.Message) {
     return
   }
   
-  const member = await bot.getChatMember(tgChatId, fromId).catch(() => ({
-    status: 'none'
-  }))
+  const isMember = await checkMembership(fromId)
 
-  if(
-    member.status !== 'administrator' &&
-    member.status !== 'creator' &&
-    member.status !== 'member'
-  ) {
+  if(isMember) {
     await bot.sendMessage(fromId, 'Сорри, тебя нет в списках')
     return
   }
