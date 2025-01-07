@@ -110,7 +110,7 @@ export async function handleMessage(msg: TelegramBot.Message) {
 
     const warningMessage = await bot.sendMessage(
       fromId,
-      'Эти сообщения удалятся через 5 минут. Не делись или ни с кем и не используй одинаковые конфиги для разных устройств.'
+      'Эти сообщения удалятся через 5 минут. Не делись ими ни с кем и не используй одинаковые конфиги для разных устройств.'
     )
 
     setTimeout(() => {
