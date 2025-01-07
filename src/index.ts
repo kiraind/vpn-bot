@@ -7,7 +7,7 @@ import { bot } from './bot'
 import { getClients } from './api/getClients'
 import { statePath } from './config'
 import { checkMembership } from './checkMembership'
-import { disableClient } from 'api/disableClient'
+import { disableClient } from './api/disableClient'
 
 async function main() {
   const usersPath = path.join(statePath, 'users.json')
