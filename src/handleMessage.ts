@@ -17,7 +17,7 @@ export async function handleMessage(msg: TelegramBot.Message) {
   
   const isMember = await checkMembership(fromId)
 
-  if(isMember) {
+  if(!isMember) {
     await bot.sendMessage(fromId, 'Сорри, тебя нет в списках')
     return
   }
