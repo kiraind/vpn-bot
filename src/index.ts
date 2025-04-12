@@ -29,7 +29,7 @@ async function main() {
       'utf-8'
     )
 
-    console.log(`Report written to ${reportPath}`)
+    console.log(`${new Date().toISOString()} Report written to ${reportPath}`)
 
     // bans
     const users: Record<string, number> = JSON.parse(
@@ -52,7 +52,7 @@ async function main() {
       }
 
       if(toBeDisabled.length > 0) {
-        console.log(`Banned ${toBeDisabled.length} account(s) of @${username}, reason: ${reason}`)
+        console.log(`${new Date().toISOString()} Banned ${toBeDisabled.length} account(s) of @${username}, reason: ${reason}`)
       }
     }
   })
