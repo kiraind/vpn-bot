@@ -39,7 +39,7 @@ async function main() {
     for(const username of Object.keys(users)) {
       const userId = users[username]
 
-      const isMember = await checkMembership(userId)
+      const [isMember, reason] = await checkMembership(userId)
 
       if(isMember) {
         continue
@@ -52,7 +52,7 @@ async function main() {
       }
 
       if(toBeDisabled.length > 0) {
-        console.log(`Banned ${toBeDisabled.length} account(s) of @${username}`)
+        console.log(`Banned ${toBeDisabled.length} account(s) of @${username}, reason: ${reason}`)
       }
     }
   })
