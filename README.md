@@ -12,8 +12,8 @@ pm2 save
 Update:
 
 ```
-git pull
 npm ci
+git pull
 npm run build
 pm2 reload vpn-bot
 pm2 save
