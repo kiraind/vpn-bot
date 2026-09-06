@@ -3,3 +3,4 @@ node_modules
 state
 tmp
 examples.md
+dist

@@ -7,6 +7,7 @@
     "build": "tsc",
     "dev": "nodemon src/index.ts",
     "test": "echo \"Error: no test specified\" && exit 1",
+    "update": "git pull && npm run build && npm run pm2:reload",
     "pm2:start": "pm2 start dist/index.js --name vpn-bot",
     "pm2:stop": "pm2 stop vpn-bot",
     "pm2:restart": "pm2 restart vpn-bot",
