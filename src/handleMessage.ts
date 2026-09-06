@@ -85,7 +85,7 @@ export async function handleMessage(msg: TelegramBot.Message) {
       fromId,
       qrBuffer,
       {
-        caption: 'Отсканируй этот код в приложении WireGuard —'
+        caption: 'Отсканируй этот код в приложении Amnezia VPN —'
       },
       {
         contentType: 'image/png',
@@ -99,7 +99,7 @@ export async function handleMessage(msg: TelegramBot.Message) {
         caption: '— или выбери в нем этот файл конфигурации.'
       },
       {
-        filename: `${id}.wireguard.conf`,
+        filename: `${id}-amnezia.conf`,
         contentType: 'plain/text'
       }
     )
