@@ -1,13 +1,11 @@
 import fs from 'fs/promises'
 import path from 'path'
 import TelegramBot from 'node-telegram-bot-api'
-import prettyBytes from 'pretty-bytes-es5'
+import QRCode from 'qrcode'
 import { bot } from './bot'
-import { getClients } from './api/getClients'
-import { getClientConfigQR } from './api/getClientConfigQR'
-import { getClientConfig } from './api/getClientConfig'
-import { createClient } from './api/createClient'
-import { disableClient } from './api/disableClient'
+import { getClients, createClient, revokeClient } from './store/clients'
+import { getServerConfig } from './awg/serverConfig'
+import { buildClientConfig } from './awg/clientConfigText'
 import { checkMembership } from './checkMembership'
 import { statePath } from './config'
 
@@ -22,7 +20,7 @@ export async function handleMessage(msg: TelegramBot.Message) {
   if(fromId !== chatId) {
     return
   }
-  
+
   const [isMember] = await checkMembership(fromId)
 
   if(!isMember) {
@@ -37,9 +35,9 @@ export async function handleMessage(msg: TelegramBot.Message) {
     return
   }
 
-  
+
   const text = msg.text;
-  
+
   if(!text) {
     return
   }
@@ -71,19 +69,12 @@ export async function handleMessage(msg: TelegramBot.Message) {
       return
     }
 
-    await createClient(fullId)
+    const server = await getServerConfig()
+    const client = await createClient(fullId, server)
 
-    const newDevices = await getClients()
-
-    const device = newDevices.find(device => device.name === fullId)
-
-    if(!device) {
-      await bot.sendMessage(fromId, 'Ой, ошибка, напиши @kiraind')
-      return
-    }
-
-    const qrBuffer = await getClientConfigQR(device.id)
-    const configBuffer = await getClientConfig(device.id)
+    const configText = buildClientConfig(client, server)
+    const configBuffer = Buffer.from(configText, 'utf8')
+    const qrBuffer = await QRCode.toBuffer(configText, { type: 'png' })
 
     await bot.sendMessage(
       fromId,
@@ -137,7 +128,7 @@ export async function handleMessage(msg: TelegramBot.Message) {
       return
     }
 
-    await disableClient(device.id)
+    await revokeClient(device)
 
     await bot.sendMessage(
       fromId,
@@ -145,10 +136,7 @@ export async function handleMessage(msg: TelegramBot.Message) {
     )
   } else if(text.startsWith('/start') || text.startsWith('/info')) {
     const userDevices = devices.filter(client => client.name.startsWith(`${username}:`) && client.enabled)
-    const deviceList = userDevices.map(device => `📲 \`${device.name.split(':')[1]}\`, ${prettyBytes(device.transferRx + device.transferTx).replace('.', '\\.')} трафика`).join('\n')
-    
-    const allUserDevices = devices.filter(client => client.name.startsWith(`${username}:`))
-    const dataUsage = allUserDevices.reduce((sum, device) => sum + device.transferRx + device.transferTx, 0)
+    const deviceList = userDevices.map(device => `📲 \`${device.name.split(':')[1]}\``).join('\n')
 
     await bot.sendMessage(
       fromId,
@@ -157,8 +145,6 @@ export async function handleMessage(msg: TelegramBot.Message) {
       ) : (
         `У тебя сейчас нет активных устройств\n`
       )) +
-      `\n` +
-      `Всего использовано ${prettyBytes(dataUsage).replace('.', '\\.')} трафика\n` +
       `\n` +
       `Доступные команды:\n` +
       `\n` +

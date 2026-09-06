@@ -26,4 +26,6 @@ pm2 restart vpn-bot
 pm2 reload vpn-bot
 pm2 stop vpn-bot
 pm2 delete vpn-bot
+
+cat ~/.pm2/logs/vpn-bot-out.log | grep Banned
 ```
