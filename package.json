@@ -6,7 +6,15 @@
     "start": "node dist/index.js",
     "build": "tsc",
     "dev": "nodemon src/index.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "pm2:start": "pm2 start dist/index.js --name vpn-bot",
+    "pm2:stop": "pm2 stop vpn-bot",
+    "pm2:restart": "pm2 restart vpn-bot",
+    "pm2:reload": "pm2 reload vpn-bot",
+    "pm2:delete": "pm2 delete vpn-bot",
+    "pm2:logs": "pm2 logs vpn-bot",
+    "pm2:save": "pm2 save",
+    "pm2:startup": "pm2 startup"
   },
   "keywords": [],
   "author": "",
