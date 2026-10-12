@@ -6,7 +6,7 @@ import type { CoordinatorConfig } from './config/schema'
 // tests build their own with a ':memory:' DB and stub `alert`.
 
 export interface AlertOptions {
-  /** Also post to the users' chat (only network up/down, R-H4); requires telegram.announceOutages. */
+  /** Post to the users' chat instead of the admins (only network up/down, R-H4). Callers check telegram.announceOutages. */
   announce?: boolean
 }
 
@@ -22,7 +22,7 @@ export interface AppContext {
   /** Last valid config (R-C1). */
   config(): CoordinatorConfig
   events: EventEmitter<AppEvents>
-  /** Message to telegram.admins (and the users' chat when `announce`). Never throws. */
+  /** Message to telegram.admins, or to the users' chat when `announce`. Never throws. */
   alert(text: string, opts?: AlertOptions): Promise<void>
 }
 
