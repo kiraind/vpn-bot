@@ -118,6 +118,8 @@ describe('ConfigWatcher', () => {
     const changed = new Promise(resolve => watcher.once('change', resolve))
     watcher.start()
     try {
+      // fs.watchFile takes its baseline stat asynchronously; a change made before that is invisible to it
+      await new Promise(resolve => setTimeout(resolve, 200))
       // rename-on-save, like many editors do
       const tmp = path.join(dir, 'config.yaml.tmp')
       fs.writeFileSync(tmp, exampleText.replace('mtu: 1280', 'mtu: 1400'))
