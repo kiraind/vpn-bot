@@ -6,7 +6,7 @@ import { packTar } from './tar'
 // reboot lives in its own files (R-P5); these scripts only install and (re)start them.
 
 /** Bump whenever any script below changes; the reconciler mixes it into desiredHash. */
-export const SCRIPTS_VERSION = '2'
+export const SCRIPTS_VERSION = '3'
 
 /** Exit codes the reconciler maps to the runbook's error strings (runbook 3.5). */
 export const EXIT_CODES = {
@@ -166,6 +166,8 @@ export function applyCommand(): string {
   return `set -e; d=$(mktemp -d /tmp/vpn-apply.XXXXXX); tar -xf - -o -C "$d"; exec bash "$d/apply.sh" "$d"`
 }
 
+const PENDING_PATH = NODE_PATHS.marker.replace(/[^/]+$/, 'pending')
+
 // ROOT (default empty) prefixes every target path so tests can run apply.sh unprivileged.
 export function applyScript(): string {
   return `#!/bin/bash
@@ -183,6 +185,8 @@ SYSCTL_CONF=${NODE_PATHS.sysctl}
 ROUTING_SCRIPT=${NODE_PATHS.routingScript}
 ROUTING_UNIT=${NODE_PATHS.routingUnit}
 MARKER=${NODE_PATHS.marker}
+# Paths installed by a run that failed before its marker; the retry must still act on them.
+PENDING=${PENDING_PATH}
 
 fail() { echo "$2" >&2; exit "$1"; }
 
@@ -193,7 +197,15 @@ for a in $ADDRESSES; do
 done
 
 # 2. Install files whose content or mode differs; keep the old copy for the peer-only check.
+# A failed apply leaves files installed but not activated: seed from its pending list, else the
+# retry would see no diff and mark the node applied while it still runs the old config.
 changed=' '
+if [ -f "$ROOT$PENDING" ]; then
+  while read -r p; do if [ -n "$p" ]; then changed="$changed$p "; fi; done < "$ROOT$PENDING"
+fi
+prev_pending=$changed
+is_changed() { [[ "$changed" == *" $1 "* ]]; }
+was_pending() { [[ "$prev_pending" == *" $1 "* ]]; }
 while read -r mode path; do
   [ -n "$path" ] || continue
   src="$STAGE/files$path"
@@ -205,12 +217,16 @@ while read -r mode path; do
   fi
   install -D -m "$mode" "$src" "$dst.vpn-new"
   mv -f "$dst.vpn-new" "$dst"
-  changed="$changed$path "
+  is_changed "$path" || changed="$changed$path "
 done < "$STAGE/manifest"
-is_changed() { [[ "$changed" == *" $1 "* ]]; }
+if [ "$changed" != ' ' ]; then
+  mkdir -p "$(dirname "$ROOT$PENDING")"
+  printf '%s' "$changed" | tr -s ' ' '\\n' | sed '/^$/d' > "$ROOT$PENDING.tmp"
+  mv -f "$ROOT$PENDING.tmp" "$ROOT$PENDING"
+fi
 
 # 3. Kernel params and firewall.
-if is_changed "$SYSCTL_CONF"; then sysctl --system >/dev/null; fi
+if is_changed "$SYSCTL_CONF"; then sysctl -e --system >/dev/null; fi  # -e: net.ipv6.* absent on IPv6-less hosts
 systemctl -q enable nftables
 if is_changed "$NFT_CONF" || ! nft list table inet ${NFT_TABLE} >/dev/null 2>&1; then nft -f "$ROOT$NFT_CONF"; fi
 
@@ -226,7 +242,8 @@ for i in $INTERFACES; do
   conf="$AWG_DIR/$i.conf"
   if is_changed "$conf"; then
     old="$STAGE/old$conf"
-    if iface_up "$i" && [ -f "$old" ] && [ "$(head_of "$old")" = "$(head_of "$ROOT$conf")" ]; then
+    # A conf left pending may hold an interface-level change the live interface never got.
+    if iface_up "$i" && ! was_pending "$conf" && [ -f "$old" ] && [ "$(head_of "$old")" = "$(head_of "$ROOT$conf")" ]; then
       awg syncconf "$i" <(awg-quick strip "$i")
     else
       systemctl -q enable "awg-quick@$i"
@@ -237,8 +254,9 @@ for i in $INTERFACES; do
   fi
 done
 
-# Routing last: its routes reference the awg interfaces.
-if [ -f "$ROOT$ROUTING_UNIT" ]; then
+# Routing last: its routes reference the awg interfaces. Only LOCAL routes; a host reused from
+# LOCAL as REMOTE must drop the LOCAL-only units, or they come back (and fail) on reboot.
+if [ "$ROLE" = local ]; then
   if is_changed "$ROUTING_UNIT"; then systemctl daemon-reload; fi
   if is_changed "$ROUTING_UNIT" || is_changed "$ROUTING_SCRIPT"; then
     systemctl -q enable vpn-routing
@@ -246,6 +264,10 @@ if [ -f "$ROOT$ROUTING_UNIT" ]; then
   else
     systemctl -q enable --now vpn-routing || fail ${EXIT_CODES.routingFailed} 'vpn-routing failed to start'
   fi
+elif [ -e "$ROOT$ROUTING_UNIT" ] || [ -e "$ROOT$ROUTING_SCRIPT" ] || [ -e "$ROOT$AWG_DIR/awgc.conf" ]; then
+  systemctl -q disable --now vpn-routing awg-quick@awgc >/dev/null 2>&1 || true
+  rm -f -- "$ROOT$AWG_DIR/awgc.conf" "$ROOT$ROUTING_SCRIPT"
+  if [ -e "$ROOT$ROUTING_UNIT" ]; then rm -f -- "$ROOT$ROUTING_UNIT"; systemctl daemon-reload; fi
 fi
 
 # 5. Self-check.
@@ -266,6 +288,7 @@ mkdir -p "$(dirname "$marker")"
 printf '{%s,"appliedAt":"%s"}\\n' "$MARKER_FIELDS" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$marker.tmp"
 chmod 644 "$marker.tmp"
 mv -f "$marker.tmp" "$marker"
+rm -f -- "$ROOT$PENDING"
 
 # 7. The stage dir is removed by the EXIT trap.
 echo "APPLIED $HASH"

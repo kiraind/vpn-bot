@@ -58,7 +58,7 @@ export async function restoreBackup(tarPath: string, targets: RestoreTargets, op
 
     const existing = [...plan.map(p => p.to), ...(hasPublic ? [] : [sshPublic])].filter(to => fs.existsSync(to))
     if(existing.length && !opts.force) {
-      throw new Error(`refusing to overwrite existing files (use --force): ${existing.join(', ')}`)
+      throw new Error(`refusing to overwrite existing files (stop the coordinator first: npm run pm2:stop, then use --force): ${existing.join(', ')}`)
     }
 
     const done: string[] = []

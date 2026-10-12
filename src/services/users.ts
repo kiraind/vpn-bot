@@ -6,10 +6,16 @@ import type { UserRow } from '../types'
 // Users are keyed by Telegram id (R-S1); username is display-only and refreshed on every contact.
 
 export function upsertUser(db: Db, tgId: number, username: string | null): UserRow {
-  db.prepare(`
-    INSERT INTO users (tg_id, username, created_at) VALUES (?, ?, ?)
-    ON CONFLICT (tg_id) DO UPDATE SET username = excluded.username
-  `).run(tgId, username, now())
+  db.transaction(() => {
+    // Usernames move between accounts; a stale copy elsewhere would make /revoke_user @name hit the wrong person
+    if(username) {
+      db.prepare('UPDATE users SET username = NULL WHERE username = ? COLLATE NOCASE AND tg_id != ?').run(username, tgId)
+    }
+    db.prepare(`
+      INSERT INTO users (tg_id, username, created_at) VALUES (?, ?, ?)
+      ON CONFLICT (tg_id) DO UPDATE SET username = excluded.username
+    `).run(tgId, username, now())
+  })()
 
   return getUser(db, tgId)!
 }
@@ -24,8 +30,14 @@ export function findUserByUsername(db: Db, name: string): UserRow | null {
     return null
   }
 
-  return (db.prepare('SELECT * FROM users WHERE username = ? COLLATE NOCASE ORDER BY tg_id LIMIT 1')
-    .get(clean) as UserRow | undefined) ?? null
+  // Ambiguous (legacy duplicates) is treated as not found rather than guessing
+  const rows = db.prepare('SELECT * FROM users WHERE username = ? COLLATE NOCASE ORDER BY tg_id LIMIT 2')
+    .all(clean) as UserRow[]
+  return rows.length === 1 ? rows[0] : null
+}
+
+export function isRevoked(user: Pick<UserRow, 'revoked_at'> | null | undefined): boolean {
+  return !!user?.revoked_at
 }
 
 export function listUsers(db: Db): UserRow[] {
@@ -67,7 +79,10 @@ export function suspendUser(ctx: AppContext, tgId: number): DisableResult {
 /** Back in the chat: configs return, device tokens do not (a new /login is required, R-B1, R-A3). */
 export function reactivateUser(ctx: AppContext, tgId: number): number {
   const configs = ctx.db.transaction(() => {
-    ctx.db.prepare(`UPDATE users SET status = 'active' WHERE tg_id = ?`).run(tgId)
+    // An admin revocation is not undone by rejoining the chat
+    if(ctx.db.prepare(`UPDATE users SET status = 'active' WHERE tg_id = ? AND revoked_at IS NULL`).run(tgId).changes === 0) {
+      return 0
+    }
 
     return ctx.db.prepare(`UPDATE client_configs SET state = 'active' WHERE tg_id = ? AND state = 'suspended'`)
       .run(tgId).changes
@@ -84,7 +99,7 @@ export function reactivateUser(ctx: AppContext, tgId: number): number {
 export function revokeUser(ctx: AppContext, tgId: number): DisableResult {
   const result = ctx.db.transaction(() => {
     const at = now()
-    ctx.db.prepare(`UPDATE users SET status = 'suspended' WHERE tg_id = ?`).run(tgId)
+    ctx.db.prepare(`UPDATE users SET status = 'suspended', revoked_at = COALESCE(revoked_at, ?) WHERE tg_id = ?`).run(at, tgId)
     const configs = ctx.db.prepare(`
       UPDATE client_configs SET state = 'revoked', revoked_at = ? WHERE tg_id = ? AND state != 'revoked'
     `).run(at, tgId).changes
@@ -97,4 +112,12 @@ export function revokeUser(ctx: AppContext, tgId: number): DisableResult {
   }
 
   return result
+}
+
+/**
+ * Lifts an admin revocation. The user stays suspended; the next bot contact as a chat member
+ * reactivates them (their old configs are gone for good).
+ */
+export function unrevokeUser(ctx: AppContext, tgId: number): boolean {
+  return ctx.db.prepare('UPDATE users SET revoked_at = NULL WHERE tg_id = ? AND revoked_at IS NOT NULL').run(tgId).changes > 0
 }

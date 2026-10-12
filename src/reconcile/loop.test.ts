@@ -7,6 +7,8 @@ import type { NodeProbe } from '../health/evaluate'
 import type { HostRow } from '../types'
 import { HostKeyMismatchError } from '../ssh/client'
 import { ensureSiteIdentities } from '../services/identity'
+import { createConfig } from '../services/configs'
+import { upsertUser } from '../services/users'
 import { exampleConfig } from '../services/testFixtures'
 import { getGeoSet, updateGeoSet } from '../geo/store'
 import { backoffMinutes, NodeLock, Reconciler, type ReconcilerDeps } from './loop'
@@ -122,6 +124,84 @@ describe('backoff', () => {
     const texts = h.alerts.map(a => a.text)
     expect(texts).toContain('main/local: ошибка bootstrap: apt failed')
     expect(texts.find(t => t.startsWith('main/remote'))).toMatch(/\/trust main\/remote/)
+  })
+
+  it('a host-key mismatch mid-streak still sends the /trust prompt, once', async () => {
+    const h = setup()
+    let n = 0
+    h.provision.mockImplementation(async (_deps: ProvisionDeps, target: NodeTarget) => {
+      if(target.node !== 'main/local') return { outcome: 'up-to-date', bootstrapped: false }
+      n += 1
+      if(n === 1) throw new Error('ssh timeout')
+      throw new HostKeyMismatchError(target.host, 'SHA256:x')
+    })
+    const local = new Set(['main/local'])
+    await h.rec.runCycle({ nodes: local })
+    await h.rec.runCycle({ nodes: local, ignoreBackoff: true })
+    await h.rec.runCycle({ nodes: local, ignoreBackoff: true })
+    const texts = h.alerts.map(a => a.text)
+    expect(texts).toHaveLength(2)
+    expect(texts[0]).toBe('main/local: ошибка apply: ssh timeout')
+    expect(texts[1]).toMatch(/\/trust main\/local/)
+    expect(h.host('main/local').consecutive_failures).toBe(3)
+  })
+
+  it('a hung alert never stalls later cycles or health checks', async () => {
+    const h = setup()
+    h.ctx.alert = () => new Promise(() => {})
+    h.provision.mockRejectedValue(new Error('boom'))
+    const race = <T>(p: Promise<T>) => Promise.race([p.then(() => 'done'), new Promise(r => setTimeout(() => r('stalled'), 200))])
+
+    expect(await race(h.rec.runCycle())).toBe('done')
+    expect(await race(h.rec.runCycle({ ignoreBackoff: true }))).toBe('done')
+    expect(h.provision).toHaveBeenCalledTimes(4)
+
+    h.reload.result = { ok: false, errors: ['bad'] }
+    h.provision.mockResolvedValue({ outcome: 'applied', bootstrapped: false })
+    expect(await race(h.rec.runCycle({ ignoreBackoff: true }))).toBe('done')
+
+    const nowSec = T0.getTime() / 1000
+    h.ctx.db.prepare("INSERT INTO sites (name, network) VALUES ('main', 'down')").run()
+    h.probe.mockResolvedValue(probeWith(nowSec - 5))
+    expect(await race(h.rec.runHealth())).toBe('done')
+    expect(await race(h.rec.runHealth())).toBe('done')
+    expect(h.ctx.db.prepare("SELECT network FROM sites WHERE name = 'main'").get()).toEqual({ network: 'ok' })
+    expect(await race(h.rec.runHealth())).toBe('done')
+  })
+
+  it('a throwing or rejecting alert is swallowed', async () => {
+    const logs: string[] = []
+    const h = setup({ log: msg => logs.push(msg) })
+    h.provision.mockRejectedValue(new Error('boom'))
+    h.ctx.alert = () => { throw new Error('sync') }
+    await expect(h.rec.runCycle()).resolves.toHaveLength(2)
+    h.ctx.alert = async () => { throw new Error('async') }
+    h.provision.mockResolvedValue({ outcome: 'applied', bootstrapped: false })
+    await expect(h.rec.applyNow()).resolves.toHaveLength(2)
+    await new Promise(r => setTimeout(r, 0))
+    expect(logs).toEqual(['alert failed: sync', 'alert failed: sync', 'alert failed: async', 'alert failed: async'])
+  })
+
+  it('a render error (client subnet no longer covers a config) is reported and alerted once', async () => {
+    const h = setup()
+    upsertUser(h.ctx.db, 1, 'alice')
+    createConfig(h.ctx, { tgId: 1, name: 'phone', issuedVia: 'bot' })
+    const original = h.ctx.config().clients.subnet
+    h.ctx.config().clients.subnet = '172.31.0.0/24'
+
+    const reports = await h.rec.runCycle()
+    expect(reports).toHaveLength(2)
+    for(const r of reports) expect(r).toMatchObject({ outcome: 'error', message: expect.stringMatching(/^рендер: клиентская подсеть 172\.31\.0\.0\/24 не содержит адрес/) })
+    expect(h.provision).not.toHaveBeenCalled()
+    expect(h.alerts).toHaveLength(1)
+    expect(h.alerts[0].text).toMatch(/площадка main: .*\n.*верни старую подсеть или отзови конфиги/)
+
+    await h.rec.runCycle()
+    expect(h.alerts).toHaveLength(1)
+
+    h.ctx.config().clients.subnet = original
+    await h.rec.runCycle()
+    expect(h.provision).toHaveBeenCalledTimes(2)
   })
 
   it('an address change resets the backoff', async () => {
@@ -358,9 +438,49 @@ describe('geo', () => {
     expect(h.alerts.at(-1)?.text).toMatch(/geo RU: новая выгрузка отклонена \(new set too small/)
     expect(getGeoSet(h.ctx.db, 'RU')?.count).toBe(4)
 
+    // Within 24h of a refusal: no new download.
+    fetchGeo.mockClear()
+    expect(await h.rec.refreshGeo()).toEqual([])
+    expect(fetchGeo).not.toHaveBeenCalled()
+
+    h.clock.now = new Date(h.clock.now.getTime() + 25 * 3600_000)
     fetchGeo.mockRejectedValueOnce(new Error('HTTP 503'))
     expect(await h.rec.refreshGeo()).toEqual([])
     expect(h.alerts.at(-1)?.text).toMatch(/HTTP 503.*остаётся прежний набор/)
+  })
+
+  it('retries a failed country once per 24h and re-alerts only on a new reason', async () => {
+    const fetchGeo = vi.fn(async (): Promise<string[]> => { throw new Error('HTTP 503') })
+    const h = setup({ fetchGeo })
+    const later = (hours: number) => { h.clock.now = new Date(h.clock.now.getTime() + hours * 3600_000) }
+
+    await h.rec.refreshGeo()
+    expect(fetchGeo).toHaveBeenCalledTimes(1)
+    expect(h.alerts).toHaveLength(1)
+
+    later(6)
+    await h.rec.refreshGeo()
+    expect(fetchGeo).toHaveBeenCalledTimes(1)
+
+    later(19)
+    await h.rec.refreshGeo()
+    expect(fetchGeo).toHaveBeenCalledTimes(2)
+    expect(h.alerts).toHaveLength(1) // same reason: no repeat alert
+
+    later(25)
+    fetchGeo.mockRejectedValueOnce(new Error('HTTP 404'))
+    await h.rec.refreshGeo()
+    expect(h.alerts.map(a => a.text)).toHaveLength(2)
+    expect(h.alerts[1].text).toMatch(/HTTP 404/)
+
+    // Success clears the failure state; a later failure alerts again.
+    later(25)
+    fetchGeo.mockResolvedValueOnce(['10.0.0.0/8'])
+    expect(await h.rec.refreshGeo()).toEqual(['RU'])
+    h.ctx.db.prepare("UPDATE geo_sets SET fetched_at = '2000-01-01T00:00:00Z'").run()
+    await h.rec.refreshGeo()
+    expect(h.alerts).toHaveLength(3)
+    h.rec.stop()
   })
 
   it('updateGeoSet refusal on an empty first download', async () => {

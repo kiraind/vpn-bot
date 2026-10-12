@@ -5,7 +5,7 @@ import { SCRIPTS_VERSION } from '../provision/scripts'
 import { getLocalIdentity, getRemoteIdentity } from '../services/identity'
 import { activePeers } from '../services/configs'
 import { getGeoSet } from '../geo/store'
-import { mergeCidrs } from '../geo/cidr'
+import { cidrToRange, ipToInt, mergeCidrs } from '../geo/cidr'
 import { desiredHash, renderLocal, renderRemote } from '../render/node'
 import type { LocalRenderInput, RemoteRenderInput } from '../render/node/input'
 import { nodeName } from '../types'
@@ -53,7 +53,23 @@ export function buildRenderInputs(ctx: AppContext, site: SiteConfig): { local: L
   return { local, remote }
 }
 
+// A changed clients.subnet that drops live configs would render NAT/peers for addresses outside
+// it; refuse to render so the cycle reports it instead of breaking the existing clients.
+export function assertClientsInSubnet(ctx: AppContext): void {
+  const subnet = ctx.config().clients.subnet
+  const [start, end] = cidrToRange(subnet)
+  const rows = ctx.db.prepare(`SELECT id, address FROM client_configs WHERE state IN ('active', 'suspended') ORDER BY address`)
+    .all() as { id: string, address: string }[]
+  for(const row of rows) {
+    const ip = ipToInt(row.address)
+    if(ip < start || ip > end) {
+      throw new Error(`клиентская подсеть ${subnet} не содержит адрес ${row.address} существующего конфига ${row.id}; верни старую подсеть или отзови конфиги`)
+    }
+  }
+}
+
 export function buildTargets(ctx: AppContext, site: SiteConfig, coordinatorVersion: string): SiteTargets {
+  assertClientsInSubnet(ctx)
   const inputs = buildRenderInputs(ctx, site)
   const extra = `${SCRIPTS_VERSION}:${coordinatorVersion}`
   const localFiles = renderLocal(inputs.local)

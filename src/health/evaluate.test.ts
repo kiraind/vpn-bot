@@ -24,6 +24,16 @@ const remote = (awgt: number | null): NodeProbe => ({ reachable: true, dump: dum
 const gone: NodeProbe = { reachable: false, error: 'timeout' }
 
 describe('evaluateSite', () => {
+  it('measures handshake age with the probed node\'s own clock', () => {
+    // Node clock is 10 min behind the coordinator: its fresh handshake looks stale by coordinator time.
+    const skewed: NodeProbe = { ...local(STALE), nowSec: STALE + 30 }
+    expect(evaluateSite(skewed, remote(STALE), NOW)).toMatchObject({ network: 'ok', local: 'ok' })
+    // Without nowSec the coordinator clock is used.
+    expect(evaluateSite(local(STALE), remote(STALE), NOW).network).toBe('degraded')
+    // LOCAL unreachable: REMOTE's age is measured with REMOTE's clock.
+    expect(evaluateSite(gone, { ...remote(STALE), nowSec: STALE + 10 }, NOW)).toMatchObject({ network: 'ok', local: 'unknown-mgmt' })
+  })
+
   it.each([
     ['all fresh', local(FRESH), remote(FRESH), 'ok', 'ok', 'ok'],
     ['tunnel stale', local(STALE), remote(STALE), 'degraded', 'degraded', 'degraded'],

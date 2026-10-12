@@ -35,7 +35,8 @@ export function renderClientConf(input: ClientRenderInput): string {
   return [
     '[Interface]',
     `Address = ${config.address}/32`,
-    `DNS = ${input.dns.join(', ')}`,
+    // AmneziaVPN's .conf import only recognises a DNS line with two addresses, so a single one is repeated
+    `DNS = ${(input.dns.length === 1 ? [input.dns[0], input.dns[0]] : input.dns).join(', ')}`,
     `PrivateKey = ${config.privateKey}`,
     `MTU = ${input.mtu}`,
     ...orderedParams(server.params).map(([k, v]) => `${k} = ${v}`),

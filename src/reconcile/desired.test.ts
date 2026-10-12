@@ -99,4 +99,26 @@ describe('buildTargets', () => {
     expect(rotated.local.hash).not.toBe(withPeer.local.hash)
     expect(rotated.remote.hash).not.toBe(withPeer.remote.hash)
   })
+
+  it('refuses to render when clients.subnet no longer covers a live config', () => {
+    const ctx = makeCtx()
+    const site = ctx.config().sites[0]
+    upsertUser(ctx.db, 1, 'alice')
+    const row = createConfig(ctx, { tgId: 1, name: 'phone', issuedVia: 'bot' })
+    if('error' in row) throw new Error(row.error)
+    const original = ctx.config().clients.subnet
+    ctx.config().clients.subnet = '172.31.0.0/24'
+    const msg = `клиентская подсеть 172.31.0.0/24 не содержит адрес ${row.address} существующего конфига ${row.id}; верни старую подсеть или отзови конфиги`
+    expect(() => buildTargets(ctx, site, '1')).toThrow(msg)
+
+    ctx.db.prepare(`UPDATE client_configs SET state = 'suspended' WHERE id = ?`).run(row.id)
+    expect(() => buildTargets(ctx, site, '1')).toThrow(msg)
+
+    ctx.db.prepare(`UPDATE client_configs SET state = 'revoked' WHERE id = ?`).run(row.id)
+    expect(() => buildTargets(ctx, site, '1')).not.toThrow()
+
+    ctx.config().clients.subnet = original
+    ctx.db.prepare(`UPDATE client_configs SET state = 'active' WHERE id = ?`).run(row.id)
+    expect(() => buildTargets(ctx, site, '1')).not.toThrow()
+  })
 })

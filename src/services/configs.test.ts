@@ -3,7 +3,7 @@ import { openDb } from '../db'
 import { createEvents, type AppContext } from '../context'
 import type { CoordinatorConfig } from '../config/schema'
 import type { ClientConfigRow } from '../types'
-import { upsertUser } from './users'
+import { revokeUser, suspendUser, upsertUser } from './users'
 import { ensureSiteIdentities, rotateParams } from './identity'
 import { exampleConfig } from './testFixtures'
 import {
@@ -153,5 +153,20 @@ describe('staleBotConfigs', () => {
     const fresh = getOwnConfig(ctx.db, 1, bot.id)!
     markDelivered(ctx.db, bot.id, configView(ctx, fresh).revision, 'bot')
     expect(staleBotConfigs(ctx)).toEqual([])
+  })
+})
+
+describe('membership gate', () => {
+  it('refuses suspended, revoked and unknown users', () => {
+    const ctx = makeCtx()
+    const peersChanged = vi.fn()
+    ctx.events.on('peers-changed', peersChanged)
+    suspendUser(ctx, 1)
+    expect(createConfig(ctx, { tgId: 1, name: 'phone', issuedVia: 'bot' })).toEqual({ error: 'not_member' })
+    revokeUser(ctx, 2)
+    expect(createConfig(ctx, { tgId: 2, name: 'phone', issuedVia: 'api' })).toEqual({ error: 'not_member' })
+    expect(createConfig(ctx, { tgId: 99, name: 'phone', issuedVia: 'api' })).toEqual({ error: 'not_member' })
+    expect(listConfigs(ctx.db, 1)).toEqual([])
+    expect(peersChanged).not.toHaveBeenCalled()
   })
 })

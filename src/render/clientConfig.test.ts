@@ -113,3 +113,9 @@ describe('renderVpnKey', () => {
     expect(json.dns2).toBe('9.9.9.9')
   })
 })
+
+describe('single DNS', () => {
+  it('repeats a lone DNS server so the AmneziaVPN importer accepts the line', () => {
+    expect(renderClientConf({ ...input, dns: ['10.0.0.53'] })).toContain('DNS = 10.0.0.53, 10.0.0.53\n')
+  })
+})

@@ -117,6 +117,7 @@ case "$(basename "$0") $*" in
   "ip -4 -o addr show") for a in $FAKE_ADDRS; do echo "2: eth0    inet $a/24 brd 10.0.0.255 scope global eth0"; done ;;
   "ip link show dev "*) for l in $FAKE_LINKS; do [ "$l" = "$4" ] && { echo "5: $l: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420"; exit 0; }; done; exit 1 ;;
   "ip rule show") printf '0:\\tfrom all lookup local\\n100:\\tfrom all fwmark 0x51 lookup 151\\n101:\\tfrom all fwmark 0x52 lookup 152\\n' ;;
+  "systemctl restart "*) [ -n "\${FAIL_RESTART:-}" ] && [ "$2" = "$FAIL_RESTART" ] && exit 1 ;;
 esac
 exit 0
 `
@@ -175,7 +176,7 @@ exit 0
     expect(fs.readFileSync(conf, 'utf8')).toBe(iface(51820, ['A']))
     expect(fs.statSync(conf).mode & 0o777).toBe(0o600)
     expect(fs.statSync(path.join(root, NODE_PATHS.routingScript)).mode & 0o777).toBe(0o755)
-    expect(r.calls).toContain('sysctl --system')
+    expect(r.calls).toContain('sysctl -e --system')
     expect(r.calls).toContain(`nft -f ${root}${NODE_PATHS.nftables}`)
     expect(r.calls).toContain('systemctl restart awg-quick@awgc')
     expect(r.calls).toContain('systemctl restart awg-quick@awgt')
@@ -249,5 +250,64 @@ exit 0
     expect(local.stderr).toContain('fwmark 0x51')
     const remote = run(files(iface(51820, ['A'])), { ...meta, role: 'remote' })
     expect(remote.status).toBe(0)
+  })
+
+  it('a failed restart leaves the change pending, so the retry restarts again', () => {
+    run(files(iface(51820, ['A'])))
+    const pending = path.join(root, NODE_PATHS.marker.replace(/[^/]+$/, 'pending'))
+    expect(fs.existsSync(pending)).toBe(false)
+    const changedFiles = files(iface(51900, ['A']))
+    changedFiles[3] = { ...changedFiles[3], content: 'net.ipv4.ip_forward=1\nnet.ipv6.conf.all.forwarding=1\n' }
+    env.FAIL_RESTART = 'awg-quick@awgc'
+    const failed = run(changedFiles, { ...meta, hash: 'h2' })
+    expect(failed.status).toBe(31)
+    expect(fs.readFileSync(pending, 'utf8').trim().split('\n').sort())
+      .toEqual([`${NODE_PATHS.awgDir}/awgc.conf`, NODE_PATHS.sysctl].sort())
+    expect(JSON.parse(fs.readFileSync(path.join(root, NODE_PATHS.marker), 'utf8')).appliedHash).toBe('h1')
+
+    delete env.FAIL_RESTART
+    const retry = run(changedFiles, { ...meta, hash: 'h2' })
+    expect(retry.status).toBe(0)
+    expect(retry.calls).toContain('systemctl restart awg-quick@awgc')
+    expect(retry.calls).toContain('sysctl -e --system')
+    expect(retry.calls.some(c => c.startsWith('awg syncconf'))).toBe(false)
+    expect(retry.calls).not.toContain('systemctl restart awg-quick@awgt')
+    expect(fs.existsSync(pending)).toBe(false)
+    expect(JSON.parse(fs.readFileSync(path.join(root, NODE_PATHS.marker), 'utf8')).appliedHash).toBe('h2')
+
+    // Once applied, the same stage is a no-op again.
+    const again = run(changedFiles, { ...meta, hash: 'h2' })
+    expect(again.calls.filter(c => /restart|syncconf|sysctl|nft -f|daemon-reload/.test(c))).toEqual([])
+  })
+
+  it('a pending peers-only change restarts instead of syncconf', () => {
+    run(files(iface(51820, ['A'])))
+    env.FAIL_RESTART = 'awg-quick@awgc'
+    expect(run(files(iface(51900, ['A']))).status).toBe(31)
+    delete env.FAIL_RESTART
+    // Peers-only relative to the installed-but-never-applied file; the live interface still has 51820.
+    const r = run(files(iface(51900, ['A', 'B'])))
+    expect(r.status).toBe(0)
+    expect(r.calls).toContain('systemctl restart awg-quick@awgc')
+    expect(r.calls.some(c => c.startsWith('awg syncconf'))).toBe(false)
+  })
+
+  it('a LOCAL host reused as REMOTE drops awgc and vpn-routing', () => {
+    run(files(iface(51820, ['A'])))
+    const remoteFiles = files(iface(51820, ['A'])).filter(f => /awgt\.conf$|nftables|sysctl/.test(f.path))
+    const r = run(remoteFiles, { ...meta, node: 'main/remote', role: 'remote', interfaces: ['awgt'] })
+    expect(r.stderr).toBe('')
+    expect(r.status).toBe(0)
+    expect(r.calls).toContain('systemctl -q disable --now vpn-routing awg-quick@awgc')
+    expect(r.calls).toContain('systemctl daemon-reload')
+    expect(r.calls.filter(c => c.includes('vpn-routing') && !c.includes('disable'))).toEqual([])
+    for(const p of [`${NODE_PATHS.awgDir}/awgc.conf`, NODE_PATHS.routingScript, NODE_PATHS.routingUnit]) {
+      expect(fs.existsSync(path.join(root, p))).toBe(false)
+    }
+    expect(fs.existsSync(path.join(root, NODE_PATHS.awgDir, 'awgt.conf'))).toBe(true)
+    // Nothing left to clean up on the next run.
+    const again = run(remoteFiles, { ...meta, node: 'main/remote', role: 'remote', interfaces: ['awgt'] })
+    expect(again.status).toBe(0)
+    expect(again.calls.filter(c => /disable|daemon-reload|vpn-routing/.test(c))).toEqual([])
   })
 })

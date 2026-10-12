@@ -33,23 +33,29 @@ export interface CreateConfigInput {
   issuedVia: 'bot' | 'api'
 }
 
-export function createConfig(ctx: AppContext, input: CreateConfigInput): ClientConfigRow | { error: 'invalid_name' | 'name_taken' } {
+export type CreateConfigError = 'invalid_name' | 'name_taken' | 'not_member'
+
+export function createConfig(ctx: AppContext, input: CreateConfigInput): ClientConfigRow | { error: CreateConfigError } {
   if(!NAME_RE.test(input.name)) return { error: 'invalid_name' }
 
   const keys = genKeyPair()
   const psk = genPresharedKey()
-  const row = ctx.db.transaction((): ClientConfigRow | null => {
-    if(findConfigByName(ctx.db, input.tgId, input.name)) return null
+  const row = ctx.db.transaction((): ClientConfigRow | { error: CreateConfigError } => {
+    // Checked inside the transaction: a suspension racing with /add must not leave an active peer behind
+    const user = ctx.db.prepare('SELECT status, revoked_at FROM users WHERE tg_id = ?').get(input.tgId) as
+      { status: string, revoked_at: string | null } | undefined
+    if(!user || user.status !== 'active' || user.revoked_at) return { error: 'not_member' }
+    if(findConfigByName(ctx.db, input.tgId, input.name)) return { error: 'name_taken' }
     const id = randomUUID()
     ctx.db.prepare(`
       INSERT INTO client_configs (id, tg_id, name, address, private_key, public_key, preshared_key, state, issued_via, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
     `).run(id, input.tgId, input.name, allocateAddress(ctx.db, ctx.config().clients.subnet),
       keys.privateKey, keys.publicKey, psk, input.issuedVia, now())
-    return getConfig(ctx.db, id)
+    return getConfig(ctx.db, id)!
   })()
 
-  if(!row) return { error: 'name_taken' }
+  if('error' in row) return row
   ctx.events.emit('peers-changed')
   return row
 }

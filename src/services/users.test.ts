@@ -5,7 +5,7 @@ import { createEvents } from '../context'
 import type { AppContext } from '../context'
 import type { CoordinatorConfig } from '../config/schema'
 import {
-  findUserByUsername, getUser, listUsers, markMembershipChecked, reactivateUser, revokeUser, suspendUser, upsertUser,
+  findUserByUsername, getUser, listUsers, markMembershipChecked, reactivateUser, revokeUser, suspendUser, unrevokeUser, upsertUser,
 } from './users'
 
 function fakeCtx(db: Db = openDb(':memory:')) {
@@ -149,5 +149,55 @@ describe('users', () => {
     expect(rows.every(r => r.revoked_at)).toBe(true)
     expect(peersChanged).toHaveBeenCalledTimes(1)
     expect(reactivateUser(ctx, 1)).toBe(0)
+  })
+})
+
+describe('admin revocation', () => {
+  it('sets revoked_at; reactivation is refused until unrevoked', () => {
+    const { ctx } = fakeCtx()
+    upsertUser(ctx.db, 1, 'a')
+    revokeUser(ctx, 1)
+    const user = getUser(ctx.db, 1)!
+    expect(user.status).toBe('suspended')
+    expect(user.revoked_at).not.toBeNull()
+
+    addConfig(ctx.db, 1, 'suspended')
+    expect(reactivateUser(ctx, 1)).toBe(0)
+    expect(getUser(ctx.db, 1)!.status).toBe('suspended')
+    expect(states(ctx.db, 1)).toEqual(['suspended'])
+
+    expect(unrevokeUser(ctx, 1)).toBe(true)
+    expect(unrevokeUser(ctx, 1)).toBe(false)
+    expect(getUser(ctx.db, 1)!.revoked_at).toBeNull()
+    expect(reactivateUser(ctx, 1)).toBe(1)
+    expect(getUser(ctx.db, 1)!.status).toBe('active')
+  })
+
+  it('keeps the first revoked_at on a repeated revoke', () => {
+    const { ctx } = fakeCtx()
+    upsertUser(ctx.db, 1, 'a')
+    ctx.db.prepare(`UPDATE users SET revoked_at = '2026-01-01T00:00:00.000Z' WHERE tg_id = 1`).run()
+    revokeUser(ctx, 1)
+    expect(getUser(ctx.db, 1)!.revoked_at).toBe('2026-01-01T00:00:00.000Z')
+  })
+})
+
+describe('stale usernames', () => {
+  it('a username moves to its new owner, case-insensitively', () => {
+    const { ctx } = fakeCtx()
+    upsertUser(ctx.db, 1, 'Alice')
+    upsertUser(ctx.db, 2, 'alice')
+    expect(getUser(ctx.db, 1)!.username).toBeNull()
+    expect(findUserByUsername(ctx.db, '@ALICE')!.tg_id).toBe(2)
+    upsertUser(ctx.db, 3, null)
+    expect(getUser(ctx.db, 2)!.username).toBe('alice')
+  })
+
+  it('ambiguous legacy duplicates resolve to nobody', () => {
+    const { ctx } = fakeCtx()
+    upsertUser(ctx.db, 1, 'x')
+    upsertUser(ctx.db, 2, 'y')
+    ctx.db.prepare(`UPDATE users SET username = 'X' WHERE tg_id = 2`).run()
+    expect(findUserByUsername(ctx.db, 'x')).toBeNull()
   })
 })

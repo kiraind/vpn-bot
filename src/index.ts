@@ -10,7 +10,7 @@ import { ensureSiteIdentities } from './services/identity'
 import { createTelegramMemberChecker, handleChatMemberUpdate, sweepMembership } from './services/membership'
 import { buildApi } from './api/server'
 import { telegramMessenger } from './bot/messenger'
-import { handleUserCallback, handleUserMessage, resendStaleBotConfigs } from './bot/userCommands'
+import { drainPendingDeletions, handleUserCallback, handleUserMessage, resendStaleBotConfigs } from './bot/userCommands'
 import { handleAdminCallback, handleAdminCommand, sendDailyBackup } from './bot/adminCommands'
 import { createBackup } from './ops/backup'
 import { Reconciler } from './reconcile/loop'
@@ -23,6 +23,9 @@ const coordinatorVersion: string = require('../package.json').version
 // One process: Telegram bot + client API + reconciler + cron jobs (spec section 11).
 
 async function main() {
+  // Everything we write (DB, WAL, SSH key, backups) holds secrets.
+  process.umask(0o077)
+
   const watcher = new ConfigWatcher(DEFAULT_CONFIG_PATH)
   const initial = watcher.reload()
 
@@ -37,6 +40,8 @@ async function main() {
 
   // The bot token is read once; changing it needs a restart.
   const bot = new TelegramBot(config().telegram.botToken, {
+    // Without a timeout a stalled request never settles, and alerts/sends would hang forever.
+    request: { timeout: 30_000 } as TelegramBot.ConstructorOptions['request'],
     // getUpdates is sent form-encoded, so the list must be a JSON string or Telegram ignores it (and chat_member is off by default).
     polling: { params: { allowed_updates: JSON.stringify(['message', 'callback_query', 'chat_member']) as unknown as string[] } },
   })
@@ -70,6 +75,7 @@ async function main() {
     provision: provisionNode,
     probe: probeNode,
     provisionDeps: { db, key, coordinatorVersion, log: msg => console.log(msg) },
+    log: msg => console.error(msg),
     reloadConfig: () => watcher.reload(),
     fetchGeo: country => fetchCountryCidrs(country),
     coordinatorVersion,
@@ -149,11 +155,20 @@ async function main() {
   // the process restarted between the change and the resend.
   resendStaleBotConfigs(ctx, messenger).catch(e => console.error('resend failed:', e))
 
+  // Config messages scheduled for auto-delete before a restart still have to go.
+  const drain = () => {
+    drainPendingDeletions(ctx, messenger).catch(e => console.error('pending deletions failed:', e))
+  }
+  drain()
+  const drainTimer = setInterval(drain, 60_000)
+
   const shutdown = async () => {
+    clearInterval(drainTimer)
     reconciler.stop()
     watcher.stop()
-    await bot.stopPolling()
+    // pm2 kills after ~1.6 s: don't wait for the in-flight long poll.
     await api.close()
+    await bot.stopPolling({ cancel: true })
     db.close()
     process.exit(0)
   }

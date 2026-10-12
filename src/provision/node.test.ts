@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ConnectOptions, ExecOptions, ExecResult, SshSession } from '../ssh/client'
 import { SshAuthError } from '../ssh/client'
 import type { Db } from '../db'
-import { probeNode, provisionNode } from './node'
+import { PROBE_COMMAND, probeNode, provisionNode } from './node'
 import type { NodeTarget, ProvisionDeps, ProvisionPhase } from './node'
 import { applyCommand, readMarkerCommand } from './scripts'
 
@@ -222,10 +222,12 @@ describe('provisionNode', () => {
 describe('probeNode', () => {
   it('returns the parsed dump', async () => {
     const dump = 'awgt\tpriv\tpub\t51820\toff\nawgt\tpeer\t(none)\t1.2.3.4:51820\t10.0.0.0/24\t1700000000\t1\t2\toff\n'
-    const w = world([{ respond: cmd => cmd === 'awg show all dump' ? { stdout: dump } : undefined }])
+    const w = world([{ respond: cmd => cmd === PROBE_COMMAND ? { stdout: dump + '__now__ 1700000100\n' } : undefined }])
     const probe = await probeNode(deps(w), target)
     expect(probe.reachable).toBe(true)
     expect(probe.dump?.interfaces.awgt.peers[0].latestHandshake).toBe(1700000000)
+    expect(Object.keys(probe.dump!.interfaces)).toEqual(['awgt'])
+    expect(probe.nowSec).toBe(1700000100)
     expect(w.closed).toEqual([0])
   })
 
@@ -238,5 +240,12 @@ describe('probeNode', () => {
     expect(probe.reachable).toBe(false)
     expect(probe.error).toContain('awg: not found')
     expect(broken.closed).toEqual([0])
+  })
+
+  it('leaves nowSec unset when the clock line is missing', async () => {
+    const w = world([{ respond: () => ({ stdout: 'awgt\tpriv\tpub\t51820\toff\n' }) }])
+    const probe = await probeNode(deps(w), target)
+    expect(probe.reachable).toBe(true)
+    expect(probe.nowSec).toBeUndefined()
   })
 })

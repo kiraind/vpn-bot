@@ -15,6 +15,8 @@ export interface NodeProbe {
   reachable: boolean
   dump?: ParsedDump
   error?: string
+  /** The probed node's own clock (unix s) at dump time; handshake ages use it to ignore clock skew. */
+  nowSec?: number
 }
 
 export interface SiteHealth {
@@ -35,7 +37,8 @@ function handshakeAge(probe: NodeProbe, nowSec: number): number | null {
 
   const at = latestHandshake(probe.dump, TUNNEL_IFACE)
 
-  return at > 0 ? nowSec - at : null
+  // Handshake timestamps come from the node's clock, so measure their age with the same clock.
+  return at > 0 ? Math.max(0, (probe.nowSec ?? nowSec) - at) : null
 }
 
 function unreachable(probe: NodeProbe): string {

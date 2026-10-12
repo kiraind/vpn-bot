@@ -102,11 +102,25 @@ const migrations: string[] = [
     fetched_at TEXT NOT NULL
   );
   `,
+  `
+  -- /revoke_user is permanent: a revoked user is never reactivated by rejoining the chat.
+  ALTER TABLE users ADD COLUMN revoked_at TEXT;
+
+  -- Bot messages to auto-delete (configs), so the deletion survives a restart.
+  CREATE TABLE pending_deletions (
+    chat_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    delete_at TEXT NOT NULL,
+    PRIMARY KEY (chat_id, message_id)
+  );
+  `,
 ]
 
 export function openDb(file: string): Db {
   if(file !== ':memory:') {
-    fs.mkdirSync(path.dirname(file), { recursive: true })
+    // The DB holds every client and node private key.
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    fs.chmodSync(path.dirname(file), 0o700)
   }
 
   const db = new Database(file)

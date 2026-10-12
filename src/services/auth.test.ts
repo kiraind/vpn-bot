@@ -186,3 +186,12 @@ describe('appVersionStats', () => {
     ])
   })
 })
+
+describe('revoked users', () => {
+  it('cannot redeem a code even while status says active', () => {
+    db.prepare(`UPDATE users SET revoked_at = ? WHERE tg_id = 1`).run(T0.toISOString())
+    const { code } = issueLoginCode(db, 1, T0)
+    expect(redeemLoginCode(db, { code, ip: 'x' }, limiter, T0)).toEqual({ ok: false, error: 'invalid_code' })
+    expect(listTokens(db, 1)).toHaveLength(0)
+  })
+})

@@ -1,4 +1,4 @@
-import type { AppContext } from '../context'
+import type { AlertOptions, AppContext } from '../context'
 import type { SiteConfig } from '../config/schema'
 import type { NodeTarget, ProvisionDeps, ProvisionPhase, probeNode, provisionNode } from '../provision/node'
 import type { HostRow, NodeRole } from '../types'
@@ -20,6 +20,8 @@ export const HEALTH_INTERVAL_MS = 60_000
 export const GEO_INTERVAL_MS = 6 * 60 * 60_000
 export const EVENT_DEBOUNCE_MS = 1000
 export const BACKOFF_CAP_MIN = 30
+/** A failed or refused geo download is retried at most this often (it's ~30 MB each time). */
+export const GEO_RETRY_MS = 24 * 60 * 60_000
 
 /** Minutes to wait after the n-th consecutive failure (n ≥ 1): 1, 2, 4, … capped at 30 (R-P3). */
 export function backoffMinutes(failures: number): number {
@@ -90,6 +92,10 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+function isHostKeyMismatch(err: unknown): boolean {
+  return err instanceof HostKeyMismatchError || (err instanceof Error && err.name === 'HostKeyMismatchError')
+}
+
 export class Reconciler implements ReconcilerControl {
   private readonly locks = new Map<string, NodeLock>()
   private readonly debouncers = new Map<string, Debouncer>()
@@ -98,6 +104,10 @@ export class Reconciler implements ReconcilerControl {
   private healthRunning = false
   private geoRunning = false
   private lastConfigErrors: string | null = null
+  /** Last render error alerted per site; cleared once the site renders again. */
+  private readonly renderErrors = new Map<string, string>()
+  /** Geo per country: when the last failed/refused attempt was, and the reason last alerted. */
+  private readonly geoAttempts = new Map<string, { failedAt: number, alerted: string }>()
   private timers: NodeJS.Timeout[] = []
   private eventTimer: NodeJS.Timeout | null = null
   private eventNodes = new Set<string>()
@@ -127,6 +137,20 @@ export class Reconciler implements ReconcilerControl {
 
   private log(msg: string) {
     this.deps.log?.(msg)
+  }
+
+  // Fire-and-forget: a hung Telegram send must never stall cycles or health checks.
+  private alert(text: string, opts?: AlertOptions): void {
+    try {
+      void this.ctx.alert(text, opts).catch(err => this.log(`alert failed: ${errorMessage(err)}`))
+    } catch(err) {
+      this.log(`alert failed: ${errorMessage(err)}`)
+    }
+  }
+
+  // Same context, but its alert never blocks (for helpers that await ctx.alert).
+  private get nonBlockingCtx(): AppContext {
+    return { ...this.ctx, alert: async (text, opts) => this.alert(text, opts) }
   }
 
   // --- triggers ---
@@ -240,9 +264,15 @@ export class Reconciler implements ReconcilerControl {
       let targets: ReturnType<typeof buildTargets>
       try {
         targets = buildTargets(this.ctx, site, this.deps.coordinatorVersion)
+        this.renderErrors.delete(site.name)
       } catch(err) {
+        const message = errorMessage(err)
+        if(this.renderErrors.get(site.name) !== message) {
+          this.renderErrors.set(site.name, message)
+          this.alert(`площадка ${site.name}: не удалось построить конфигурацию узлов, изменения не применяются:\n${message}`)
+        }
         for(const role of ['local', 'remote'] as const) {
-          if(wanted(role)) work.push(Promise.resolve({ node: nodeName(site.name, role), outcome: 'error', message: `рендер: ${errorMessage(err)}` }))
+          if(wanted(role)) work.push(Promise.resolve({ node: nodeName(site.name, role), outcome: 'error', message: `рендер: ${message}` }))
         }
         continue
       }
@@ -268,7 +298,7 @@ export class Reconciler implements ReconcilerControl {
     const key = [...errors].sort().join('\n')
     if(key === this.lastConfigErrors) return
     this.lastConfigErrors = key
-    await this.ctx.alert(`config.yaml невалиден, действует последний валидный конфиг:\n${errors.join('\n')}`)
+    this.alert(`config.yaml невалиден, действует последний валидный конфиг:\n${errors.join('\n')}`)
   }
 
   private getHost(node: string): HostRow | undefined {
@@ -318,7 +348,7 @@ export class Reconciler implements ReconcilerControl {
         UPDATE hosts SET applied_hash = ?, phase = 'ready', last_ok_at = ?, consecutive_failures = 0, next_attempt_at = NULL
         WHERE node = ?
       `).run(target.hash, this.now().toISOString(), target.node)
-      if(prev.consecutive_failures > 0) await this.ctx.alert(`${target.node}: снова в порядке`)
+      if(prev.consecutive_failures > 0) this.alert(`${target.node}: снова в порядке`)
       if(result.outcome === 'applied' && target.role === 'local') this.ctx.events.emit('local-applied', target.node)
       return { node: target.node, outcome: result.outcome }
     } catch(err) {
@@ -331,13 +361,15 @@ export class Reconciler implements ReconcilerControl {
         UPDATE hosts SET phase = 'error', last_error = ?, last_error_at = ?, consecutive_failures = ?, next_attempt_at = ?
         WHERE node = ?
       `).run(message, at.toISOString(), failures, next.toISOString(), target.node)
-      if(failures === 1) await this.ctx.alert(this.failureAlert(target, err, lastPhase))
+      // A host key mismatch needs /trust, so it is announced even mid-streak (e.g. after timeouts).
+      const newMismatch = isHostKeyMismatch(err) && prev.last_error !== message
+      if(failures === 1 || newMismatch) this.alert(this.failureAlert(target, err, lastPhase))
       return { node: target.node, outcome: 'error', message }
     }
   }
 
   private failureAlert(target: NodeTarget, err: unknown, phase: ProvisionPhase): string {
-    if(err instanceof HostKeyMismatchError || (err instanceof Error && err.name === 'HostKeyMismatchError')) {
+    if(isHostKeyMismatch(err)) {
       return `${target.node}: ключ SSH хоста ${target.host} изменился, координатор не подключается.\n`
         + `${errorMessage(err)}\nЕсли ОС на этой машине переустановлена — подтвердите: /trust ${target.node}`
     }
@@ -388,10 +420,17 @@ export class Reconciler implements ReconcilerControl {
     const confirmed = debouncer.observe(result.network)
 
     persistSiteHealth(this.ctx.db, site.name, { ...result, network: debouncer.state }, at.toISOString())
-    if(confirmed) await notifyTransition(this.ctx, site.name, from, confirmed, result.detail)
+    if(confirmed) await notifyTransition(this.nonBlockingCtx, site.name, from, confirmed, result.detail)
   }
 
   // --- geo (R-L2, R-L7) ---
+
+  // Alerts only when the reason differs from the last one alerted for this country.
+  private geoFailed(country: string, reason: string, text: string) {
+    const prev = this.geoAttempts.get(country)
+    this.geoAttempts.set(country, { failedAt: this.now().getTime(), alerted: reason })
+    if(prev?.alerted !== reason) this.alert(text)
+  }
 
   /** Returns the countries whose set changed; their LOCAL nodes get a cycle right away. */
   async refreshGeo(): Promise<string[]> {
@@ -404,19 +443,25 @@ export class Reconciler implements ReconcilerControl {
       const updated: string[] = []
       for(const country of countries) {
         if(!isGeoSetStale(this.ctx.db, country, undefined, this.now())) continue
+        const attempt = this.geoAttempts.get(country)
+        if(attempt && this.now().getTime() - attempt.failedAt < GEO_RETRY_MS) continue
+
         let cidrs: string[]
         try {
           cidrs = await fetchGeo(country)
         } catch(err) {
           const kept = getGeoSet(this.ctx.db, country) ? 'остаётся прежний набор' : 'набора пока нет'
-          await this.ctx.alert(`geo ${country}: не удалось скачать db-ip (${errorMessage(err)}), ${kept}`)
+          const reason = errorMessage(err)
+          this.geoFailed(country, reason, `geo ${country}: не удалось скачать db-ip (${reason}), ${kept}`)
           continue
         }
         const result = updateGeoSet(this.ctx.db, country, cidrs, 'dbip-lite')
         if(!result.updated) {
-          await this.ctx.alert(`geo ${country}: новая выгрузка отклонена (${result.reason}), остаётся прежний набор`)
+          const reason = result.reason ?? 'unknown'
+          this.geoFailed(country, reason, `geo ${country}: новая выгрузка отклонена (${reason}), остаётся прежний набор`)
           continue
         }
+        this.geoAttempts.delete(country)
         updated.push(country)
       }
       if(updated.length) {

@@ -101,7 +101,7 @@ export async function ensureMemberFresh(
     return 'not-member'
   }
 
-  if(user.status === 'suspended') {
+  if(user.status === 'suspended' || user.revoked_at) {
     return 'not-member'
   }
 

@@ -66,6 +66,8 @@ export interface UserRow {
   status: 'active' | 'suspended'
   membership_checked_at: string | null
   created_at: string
+  /** Set by admin /revoke_user; such a user is a non-member until unrevoked. */
+  revoked_at: string | null
 }
 
 export interface DeviceTokenRow {

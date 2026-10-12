@@ -231,14 +231,29 @@ export async function provisionNode(deps: ProvisionDeps, target: NodeTarget, opt
 }
 
 /** Health probe (spec 8 R-H1). Never throws. */
+// The node's own clock comes along with the dump so handshake ages don't depend on clock skew
+// between the coordinator and the node; awg's exit code is preserved so failures still throw.
+export const PROBE_COMMAND = 'awg show all dump; rc=$?; echo "__now__ $(date +%s)"; exit $rc'
+
+export function splitProbeOutput(stdout: string): { dump: ReturnType<typeof parseAwgDump>, nowSec?: number } {
+  let nowSec: number | undefined
+  const lines = stdout.split('\n').filter(line => {
+    const m = /^__now__ (\d+)\s*$/.exec(line)
+    if(!m) return true
+    nowSec = Number(m[1])
+    return false
+  })
+  return nowSec === undefined ? { dump: parseAwgDump(lines.join('\n')) } : { dump: parseAwgDump(lines.join('\n')), nowSec }
+}
+
 export async function probeNode(deps: ProvisionDeps, target: Pick<NodeTarget, 'node' | 'host' | 'ssh'>): Promise<NodeProbe> {
   const connect = deps.connect ?? connectSsh
   let session: SshSession | undefined
 
   try {
     session = await connect(connectOptions(deps, target))
-    const res = await session.run('awg show all dump')
-    return { reachable: true, dump: parseAwgDump(res.stdout) }
+    const res = await session.run(PROBE_COMMAND)
+    return { reachable: true, ...splitProbeOutput(res.stdout) }
   } catch(err) {
     return { reachable: false, error: err instanceof Error ? err.message : String(err) }
   } finally {

@@ -5,13 +5,15 @@ import { createEvents, type AppContext } from '../context'
 import type { MemberChecker, MembershipStatus } from '../services/membership'
 import { ensureSiteIdentities, rotateParams } from '../services/identity'
 import { exampleConfig } from '../services/testFixtures'
-import { getUser, suspendUser, upsertUser } from '../services/users'
+import { getUser, revokeUser, suspendUser, upsertUser } from '../services/users'
 import { configView, createConfig, findConfigByName, getOwnConfig, listConfigs } from '../services/configs'
 import { listTokens } from '../services/auth'
 import { hashSecret } from '../crypto/tokens'
 import type { ClientConfigRow } from '../types'
 import type { Messenger } from './messenger'
-import { AUTO_DELETE_MS, escapeMd, handleUserCallback, handleUserMessage, resendStaleBotConfigs } from './userCommands'
+import {
+  AUTO_DELETE_MS, drainPendingDeletions, escapeMd, handleUserCallback, handleUserMessage, resendStaleBotConfigs,
+} from './userCommands'
 
 const ALICE = 101
 
@@ -327,5 +329,110 @@ describe('resendStaleBotConfigs', () => {
     expect(await resendStaleBotConfigs(t.ctx, t.messenger)).toBe(1)
     warn.mockRestore()
     vi.advanceTimersByTime(AUTO_DELETE_MS)
+  })
+})
+
+describe('admin revocation (/revoke_user)', () => {
+  it('is not undone by the next message from a chat member', async () => {
+    const t = setup('member')
+    upsertUser(t.ctx.db, ALICE, 'alice')
+    create(t.ctx, 'phone')
+    revokeUser(t.ctx, ALICE)
+
+    await t.send('/add laptop')
+    await t.send('/login')
+    expect(t.texts()).toEqual(['Доступ отозван администратором.', 'Доступ отозван администратором.'])
+    const user = getUser(t.ctx.db, ALICE)!
+    expect(user.status).toBe('suspended')
+    expect(user.revoked_at).not.toBeNull()
+    expect(listConfigs(t.ctx.db, ALICE).filter(r => r.state !== 'revoked')).toEqual([])
+    expect(t.ctx.db.prepare('SELECT COUNT(*) AS n FROM login_codes').get()).toEqual({ n: 0 })
+  })
+
+  it('also blocks /devices callbacks', async () => {
+    const t = setup('member')
+    upsertUser(t.ctx.db, ALICE, 'alice')
+    revokeUser(t.ctx, ALICE)
+    await handleUserCallback(t.ctx, t.deps, {
+      id: 'q', chat_instance: 'x', data: 'revoke_token:abcdef01',
+      from: { id: ALICE, is_bot: false, first_name: 'Alice' },
+      message: { message_id: 5, date: 0, chat: { id: ALICE, type: 'private' } },
+    } as TelegramBot.CallbackQuery)
+    expect(t.of('answerCallbackQuery').map(c => c.args)).toEqual([['q', 'Доступ отозван администратором.']])
+  })
+})
+
+describe('/add delivery failure', () => {
+  it('revokes the new config and asks to retry', async () => {
+    const t = setup()
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    t.messenger.sendDocument = async () => { throw new Error('Forbidden: bot was blocked') }
+    await t.send('/add phone')
+    expect(findConfigByName(t.ctx.db, ALICE, 'phone')).toBeNull()
+    expect(t.texts().at(-1)).toBe('Не получилось отправить конфиг, попробуй ещё раз.')
+
+    // the name is free again and the QR that did go out is still cleaned up
+    t.messenger.sendDocument = async () => 100
+    await t.send('/add phone')
+    expect(findConfigByName(t.ctx.db, ALICE, 'phone')?.state).toBe('active')
+    vi.advanceTimersByTime(AUTO_DELETE_MS)
+    expect(t.of('deleteMessage').map(c => c.args)).toContainEqual([ALICE, 2])
+  })
+
+  it('a suspension racing with /add gets the deny text', async () => {
+    const t = setup()
+    await t.send('/start')
+    t.calls.length = 0
+    // Suspends the user right after checkAccess passes, like a chat_member update landing mid-command
+    t.ctx.db.prepare(`CREATE TEMP TRIGGER suspend_on_check AFTER UPDATE OF membership_checked_at ON users
+      BEGIN UPDATE users SET status = 'suspended' WHERE tg_id = NEW.tg_id; END`).run()
+    await t.send('/add phone')
+    expect(t.texts()).toEqual(['Сорри, тебя нет в списках'])
+    expect(findConfigByName(t.ctx.db, ALICE, 'phone')).toBeNull()
+  })
+})
+
+describe('pending deletions (survive restarts)', () => {
+  const pending = (t: ReturnType<typeof setup>) =>
+    t.ctx.db.prepare('SELECT chat_id, message_id, delete_at FROM pending_deletions ORDER BY message_id').all() as
+      { chat_id: number, message_id: number, delete_at: string }[]
+
+  it('records sent config messages and the timer clears them', async () => {
+    const t = setup()
+    await t.send('/add phone')
+    expect(pending(t).map(r => r.message_id)).toEqual([2, 3, 4])
+    vi.advanceTimersByTime(AUTO_DELETE_MS)
+    expect(pending(t)).toEqual([])
+    expect(t.of('deleteMessage')).toHaveLength(3)
+  })
+
+  it('drain deletes due rows once, ignores errors, skips too-old ones', async () => {
+    const t = setup()
+    const nowAt = new Date('2026-10-12T12:00:00.000Z')
+    const ins = t.ctx.db.prepare('INSERT INTO pending_deletions (chat_id, message_id, delete_at) VALUES (?, ?, ?)')
+    ins.run(ALICE, 1, '2026-10-12T11:59:00.000Z') // due
+    ins.run(ALICE, 2, '2026-10-12T11:00:00.000Z') // due, Telegram fails
+    ins.run(ALICE, 3, '2026-10-12T12:05:00.000Z') // not yet
+    ins.run(ALICE, 4, '2026-10-10T12:00:00.000Z') // 48h old: dropped without trying
+    const deleteMessage = vi.fn(async (_chat: unknown, id: number) => {
+      if(id === 2) throw new Error('message to delete not found')
+    })
+    t.messenger.deleteMessage = deleteMessage
+
+    expect(await drainPendingDeletions(t.ctx, t.messenger, nowAt)).toBe(2)
+    expect(deleteMessage.mock.calls.map(c => c[1]).sort()).toEqual([1, 2])
+    expect(pending(t).map(r => r.message_id)).toEqual([3])
+
+    expect(await drainPendingDeletions(t.ctx, t.messenger, nowAt)).toBe(0)
+    expect(await drainPendingDeletions(t.ctx, t.messenger, new Date('2026-10-12T12:05:00.000Z'))).toBe(1)
+    expect(pending(t)).toEqual([])
+  })
+
+  it('a drain after restart deletes what the lost timer would have', async () => {
+    const t = setup()
+    await t.send('/add phone')
+    vi.clearAllTimers() // the process died
+    expect(await drainPendingDeletions(t.ctx, t.messenger, new Date(Date.now() + AUTO_DELETE_MS))).toBe(3)
+    expect(t.of('deleteMessage').map(c => c.args)).toEqual([[ALICE, 2], [ALICE, 3], [ALICE, 4]])
   })
 })

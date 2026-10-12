@@ -72,7 +72,7 @@ const idParams = {
 export function buildApi(ctx: AppContext, deps: ApiDeps): FastifyInstance {
   const limiter = deps.limiter ?? new LoginRateLimiter()
   // No type coercion: `{ code: 5 }` is a bad request, not the code "5"
-  const app = Fastify({ trustProxy: true, logger: false, bodyLimit: 16 * 1024, ajv: { customOptions: { coerceTypes: false } } })
+  const app = Fastify({ trustProxy: 'loopback', logger: false, bodyLimit: 16 * 1024, ajv: { customOptions: { coerceTypes: false } } })
 
   app.decorateRequest('auth', null)
 
@@ -159,7 +159,11 @@ export function buildApi(ctx: AppContext, deps: ApiDeps): FastifyInstance {
         },
       }, async (req, reply) => {
         const row = createConfig(ctx, { tgId: req.auth!.tgId, name: req.body.name, issuedVia: 'api' })
-        if('error' in row) return row.error === 'name_taken' ? send(reply, 409, 'name_taken') : send(reply, 400, 'invalid_name')
+        if('error' in row) {
+          if(row.error === 'name_taken') return send(reply, 409, 'name_taken')
+          if(row.error === 'not_member') return send(reply, 403, 'not_member')
+          return send(reply, 400, 'invalid_name')
+        }
         const view = configView(ctx, row)
         markDelivered(ctx.db, row.id, view.revision, 'api')
         return reply.code(201).send(view)

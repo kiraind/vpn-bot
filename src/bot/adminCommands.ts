@@ -4,7 +4,7 @@ import type TelegramBot from 'node-telegram-bot-api'
 import type { AppContext } from '../context'
 import type { ReconcileReport, ReconcilerControl } from '../reconcile/control'
 import { appVersionStats } from '../services/auth'
-import { findUserByUsername, getUser, revokeUser } from '../services/users'
+import { findUserByUsername, getUser, revokeUser, unrevokeUser } from '../services/users'
 import { getKnownHost } from '../ssh/knownHosts'
 import { nodeName, type HostRow } from '../types'
 import type { Messenger } from './messenger'
@@ -28,7 +28,8 @@ const HELP = [
   '/apply upgrade — то же + обновить пакеты на серверах',
   '/trust <узел> — принять новый host key после переустановки (например /trust main/local)',
   '/rotate tunnel | /rotate clients — новые параметры обфускации',
-  '/revoke_user <@username|id> — отозвать пользователя',
+  '/revoke_user <@username|id> — отозвать пользователя (насовсем, даже если он остался в чате)',
+  '/unrevoke_user <@username|id> — вернуть доступ; конфиги заново выпускает сам пользователь',
   '/backup — прислать бэкап сейчас',
 ].join('\n')
 
@@ -163,6 +164,22 @@ async function revokeUserCommand(ctx: AppContext, messenger: Messenger, chatId: 
   await messenger.sendMessage(chatId, `${who} отозван: конфигов ${configs}, токенов устройств ${tokens}`)
 }
 
+async function unrevokeUserCommand(ctx: AppContext, messenger: Messenger, chatId: number, arg: string | undefined) {
+  if(!arg) {
+    await messenger.sendMessage(chatId, 'Использование: /unrevoke_user <@username|id>')
+    return
+  }
+  const user = /^\d+$/.test(arg) ? getUser(ctx.db, Number(arg)) : findUserByUsername(ctx.db, arg)
+  if(!user) {
+    await messenger.sendMessage(chatId, `Пользователь ${arg} не найден`)
+    return
+  }
+  const who = user.username ? `@${user.username} (${user.tg_id})` : String(user.tg_id)
+  await messenger.sendMessage(chatId, unrevokeUser(ctx, user.tg_id)
+    ? `${who}: доступ возвращён, при следующем обращении к боту (если он в чате) снова сможет выпускать конфиги`
+    : `${who} не был отозван`)
+}
+
 async function backupCommand(deps: AdminCommandDeps, chatId: number) {
   let file: string | undefined
   try {
@@ -234,6 +251,10 @@ export async function handleAdminCommand(ctx: AppContext, deps: AdminCommandDeps
 
     case 'revoke_user':
       await revokeUserCommand(ctx, messenger, chatId, args[0])
+      return true
+
+    case 'unrevoke_user':
+      await unrevokeUserCommand(ctx, messenger, chatId, args[0])
       return true
 
     case 'backup':

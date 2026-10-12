@@ -230,3 +230,24 @@ describe('configs', () => {
     expect(res.json().error.code).toBe('not_found')
   })
 })
+
+describe('configs membership race', () => {
+  it('POST /v1/configs is 403 not_member when the user is suspended mid-request', async () => {
+    const token = await login()
+    // The live check passes but the user gets suspended right after (e.g. a chat_member update)
+    const racing = buildApi(ctx, {
+      checker: async tgId => {
+        ctx.db.prepare(`UPDATE users SET status = 'suspended' WHERE tg_id = ?`).run(tgId)
+        return { status: 'member', reason: 'test' }
+      },
+      limiter: new LoginRateLimiter(),
+    })
+    try {
+      const res = await racing.inject({ method: 'POST', url: '/v1/configs', headers: auth(token), payload: { name: 'phone' } })
+      expect(res.statusCode).toBe(403)
+      expect(res.json().error.code).toBe('not_member')
+    } finally {
+      await racing.close()
+    }
+  })
+})

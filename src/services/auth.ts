@@ -84,16 +84,16 @@ export function redeemLoginCode(db: Db, input: RedeemInput, limiter: LoginRateLi
 
   return db.transaction((): RedeemResult => {
     const row = db.prepare(`
-      SELECT c.tg_id, u.username, u.status FROM login_codes c JOIN users u ON u.tg_id = c.tg_id
+      SELECT c.tg_id, u.username, u.status, u.revoked_at FROM login_codes c JOIN users u ON u.tg_id = c.tg_id
       WHERE c.code_hash = ? AND c.used_at IS NULL AND c.expires_at > ?
-    `).get(codeHash, nowIso) as { tg_id: number, username: string | null, status: string } | undefined
+    `).get(codeHash, nowIso) as { tg_id: number, username: string | null, status: string, revoked_at: string | null } | undefined
 
     if(!row) {
       recordFailure(db, nowIso)
       return { ok: false, error: 'invalid_code' }
     }
     // A real code of a suspended user is not a guess, so it doesn't count as a failure
-    if(row.status === 'suspended') return { ok: false, error: 'invalid_code' }
+    if(row.status === 'suspended' || row.revoked_at) return { ok: false, error: 'invalid_code' }
 
     db.prepare('UPDATE login_codes SET used_at = ? WHERE code_hash = ?').run(nowIso, codeHash)
     const token = genDeviceToken()

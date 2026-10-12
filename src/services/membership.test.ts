@@ -178,3 +178,15 @@ describe('handleChatMemberUpdate (R-B2)', () => {
     expect(peersChanged).not.toHaveBeenCalled()
   })
 })
+
+describe('ensureMemberFresh with admin revocation', () => {
+  it('a revoked user is not a member despite a fresh cache', async () => {
+    const { ctx } = fakeCtx()
+    addUserWithStuff(ctx.db, 1)
+    markMembershipChecked(ctx.db, 1, now())
+    ctx.db.prepare(`UPDATE users SET revoked_at = ? WHERE tg_id = 1`).run(now())
+    const checker = checkerOf({ 1: 'member' })
+    expect(await ensureMemberFresh(ctx, checker, 1)).toBe('not-member')
+    expect(checker).not.toHaveBeenCalled()
+  })
+})

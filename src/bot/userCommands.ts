@@ -21,6 +21,10 @@ const REVOKE_PREFIX = 'revoke_token:'
 
 const NOT_MEMBER = 'Сорри, тебя нет в списках'
 const CHECK_FAILED = 'Не получилось проверить, есть ли ты в чате. Попробуй чуть позже'
+const REVOKED = 'Доступ отозван администратором.'
+const SEND_FAILED = 'Не получилось отправить конфиг, попробуй ещё раз.'
+// Telegram refuses to delete messages older than 48 hours; past this there is no point trying
+const DELETE_GIVE_UP_MS = 47 * 60 * 60 * 1000
 
 const MD_SPECIAL = /[_*[\]()~`>#+\-=|{}.!\\]/g
 
@@ -34,7 +38,7 @@ function escapeCode(text: string): string {
   return text.replace(/[`\\]/g, '\\$&')
 }
 
-type Access = 'ok' | 'not-member' | 'unknown'
+type Access = 'ok' | 'not-member' | 'unknown' | 'revoked'
 
 /**
  * Live check; when Telegram can't answer we trust a cached active user, but never a
@@ -42,6 +46,8 @@ type Access = 'ok' | 'not-member' | 'unknown'
  */
 async function checkAccess(ctx: AppContext, checker: MemberChecker, from: TelegramBot.User): Promise<Access> {
   const user = getUser(ctx.db, from.id)
+  // Admin revocation outranks chat membership: rejoining must not undo /revoke_user
+  if(user?.revoked_at) return 'revoked'
   const { status, reason } = await checker(from.id)
 
   if(status === 'unknown') {
@@ -71,7 +77,9 @@ async function checkAccess(ctx: AppContext, checker: MemberChecker, from: Telegr
 }
 
 function denyText(access: Access): string {
-  return access === 'unknown' ? CHECK_FAILED : NOT_MEMBER
+  if(access === 'unknown') return CHECK_FAILED
+  if(access === 'revoked') return REVOKED
+  return NOT_MEMBER
 }
 
 /** `/add@MyBot phone` → ['/add', 'phone'] */
@@ -148,13 +156,23 @@ async function addDevice(ctx: AppContext, messenger: Messenger, chatId: number, 
   const result = name ? createConfig(ctx, { tgId: chatId, name, issuedVia: 'bot' }) : { error: 'invalid_name' as const }
 
   if('error' in result) {
+    const user = getUser(ctx.db, chatId)
     await messenger.sendMessage(chatId, result.error === 'name_taken'
       ? 'Устройство с таким именем уже есть'
-      : 'Укажи имя устройства: латинские буквы, цифры и черточки (-), до 32 символов ([a-z0-9-]{1,32}). Например: /add phone')
+      : result.error === 'not_member'
+        ? (user?.revoked_at ? REVOKED : NOT_MEMBER)
+        : 'Укажи имя устройства: латинские буквы, цифры и черточки (-), до 32 символов ([a-z0-9-]{1,32}). Например: /add phone')
     return
   }
 
-  await sendConfigToUser(ctx, messenger, result, 'Готово! Сервер подхватит новое устройство в течение нескольких секунд.')
+  try {
+    await sendConfigToUser(ctx, messenger, result, 'Готово! Сервер подхватит новое устройство в течение нескольких секунд.')
+  } catch(e) {
+    // The user never got the keys; keeping the row would block the name and hold a dead peer
+    console.warn(`${now()} failed to send new config ${result.id} to ${chatId}: ${e instanceof Error ? e.message : String(e)}`)
+    revokeConfig(ctx, chatId, result.id)
+    await messenger.sendMessage(chatId, SEND_FAILED).catch(() => {})
+  }
 }
 
 /**
@@ -169,22 +187,63 @@ export async function sendConfigToUser(ctx: AppContext, messenger: Messenger, ro
   await messenger.sendMessage(chatId, intro)
 
   const sent: number[] = []
+  // Recorded in the DB as each one goes out, so a restart doesn't leave keys in the chat
+  const track = (id: number) => {
+    sent.push(id)
+    scheduleDeletion(ctx, chatId, id, new Date(Date.now() + AUTO_DELETE_MS))
+  }
   try {
-    sent.push(await messenger.sendPhoto(chatId, qr, { caption: 'Отсканируй этот код в приложении Amnezia VPN —' }))
-    sent.push(await messenger.sendDocument(chatId, Buffer.from(view.awg, 'utf8'), `${row.name}-amnezia.conf`,
+    track(await messenger.sendPhoto(chatId, qr, { caption: 'Отсканируй этот код в приложении Amnezia VPN —' }))
+    track(await messenger.sendDocument(chatId, Buffer.from(view.awg, 'utf8'), `${row.name}-amnezia.conf`,
       '— или выбери в нем этот файл конфигурации.'))
-    sent.push(await messenger.sendMessage(chatId,
+    track(await messenger.sendMessage(chatId,
       'Эти сообщения удалятся через 5 минут. Не делись ими ни с кем и не используй одинаковые конфиги для разных устройств.'))
   } finally {
-    // Whatever made it out still has to disappear, even if a later send failed
+    // Whatever made it out still has to disappear, even if a later send failed. The timer is
+    // for punctuality; the periodic drain covers restarts.
     setTimeout(() => {
       for(const id of sent) {
-        messenger.deleteMessage(chatId, id).catch(() => {})
+        if(claimDeletion(ctx, chatId, id)) {
+          messenger.deleteMessage(chatId, id).catch(() => {})
+        }
       }
     }, AUTO_DELETE_MS)
   }
 
   markDelivered(ctx.db, row.id, view.revision, 'bot')
+}
+
+function scheduleDeletion(ctx: AppContext, chatId: number, messageId: number, at: Date) {
+  ctx.db.prepare('INSERT OR REPLACE INTO pending_deletions (chat_id, message_id, delete_at) VALUES (?, ?, ?)')
+    .run(chatId, messageId, at.toISOString())
+}
+
+/** Removes the row; true if this caller owns the deletion (so timer and drain never both try). */
+function claimDeletion(ctx: AppContext, chatId: number, messageId: number): boolean {
+  return ctx.db.prepare('DELETE FROM pending_deletions WHERE chat_id = ? AND message_id = ?').run(chatId, messageId).changes > 0
+}
+
+/**
+ * Deletes due auto-delete messages (run on startup and every minute). Rows are removed whatever
+ * Telegram says; ones too old for Telegram to delete are dropped without trying. Returns attempts made.
+ */
+export async function drainPendingDeletions(ctx: AppContext, messenger: Messenger, now: Date = new Date()): Promise<number> {
+  const giveUp = new Date(now.getTime() - DELETE_GIVE_UP_MS).toISOString()
+  ctx.db.prepare('DELETE FROM pending_deletions WHERE delete_at < ?').run(giveUp)
+
+  const due = ctx.db.prepare('SELECT chat_id, message_id FROM pending_deletions WHERE delete_at <= ? ORDER BY delete_at')
+    .all(now.toISOString()) as { chat_id: number, message_id: number }[]
+  let attempted = 0
+  for(const row of due) {
+    if(!claimDeletion(ctx, row.chat_id, row.message_id)) continue
+    attempted += 1
+    try {
+      await messenger.deleteMessage(row.chat_id, row.message_id)
+    } catch {
+      // Already deleted by the user, chat gone, bot blocked: nothing more to do
+    }
+  }
+  return attempted
 }
 
 /** R-O5: resends bot-issued configs whose server-side parameters changed. Returns how many were sent. */
