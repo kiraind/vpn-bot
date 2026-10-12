@@ -1,19 +1,22 @@
 {
-  "name": "vpn-bot",
-  "version": "1.0.0",
-  "main": "index.js",
+  "name": "vpn-coordinator",
+  "version": "2.0.0",
+  "main": "dist/index.js",
   "scripts": {
     "start": "node dist/index.js",
     "build": "tsc",
-    "dev": "nodemon src/index.ts",
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "update": "git pull && npm run build && npm run pm2:reload",
-    "pm2:start": "pm2 start dist/index.js --name vpn-bot",
-    "pm2:stop": "pm2 stop vpn-bot",
-    "pm2:restart": "pm2 restart vpn-bot",
-    "pm2:reload": "pm2 reload vpn-bot",
-    "pm2:delete": "pm2 delete vpn-bot",
-    "pm2:logs": "pm2 logs vpn-bot",
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "check-config": "node dist/scripts/checkConfig.js",
+    "restore": "node dist/scripts/restore.js",
+    "update": "git pull && npm ci && npm run build && npm run pm2:reload",
+    "pm2:start": "pm2 start dist/index.js --name vpn-coordinator",
+    "pm2:stop": "pm2 stop vpn-coordinator",
+    "pm2:restart": "pm2 restart vpn-coordinator",
+    "pm2:reload": "pm2 reload vpn-coordinator",
+    "pm2:delete": "pm2 delete vpn-coordinator",
+    "pm2:logs": "pm2 logs vpn-coordinator",
     "pm2:save": "pm2 save",
     "pm2:startup": "pm2 startup"
   },
@@ -22,18 +25,28 @@
   "license": "MIT",
   "description": "",
   "devDependencies": {
-    "@types/node": "^22.10.5",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^22.20.5",
     "@types/node-cron": "^3.0.11",
     "@types/node-telegram-bot-api": "^0.64.7",
     "@types/qrcode": "^1.5.5",
-    "nodemon": "^3.1.9",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.7.2"
+    "@types/ssh2": "^1.15.6",
+    "tsx": "^4.23.15",
+    "typescript": "^5.7.2",
+    "vitest": "^5.0.4"
   },
   "dependencies": {
+    "better-sqlite3": "^13.0.3",
     "dotenv": "^16.4.7",
+    "fastify": "^5.12.5",
     "node-cron": "^3.0.3",
     "node-telegram-bot-api": "^0.66.0",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "ssh2": "^1.17.0",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.6"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }
