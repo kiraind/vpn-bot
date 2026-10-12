@@ -59,22 +59,30 @@ export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
-// R-C3: non-root users go through sudo with the same password, fed as the first stdin line.
-// `-k` forces sudo to actually read that line even when a cached timestamp exists, otherwise
-// it would leak into the command's stdin. (A NOPASSWD sudoers entry would leak it too.)
+// R-C3: non-root users go through sudo. With a NOPASSWD sudoers entry (default for cloud-image
+// users like `ubuntu`) sudo never reads stdin, so feeding the password would leak it into the
+// command's stdin (executed by `bash -s`, corrupting tar streams). Hence connectSsh probes
+// `sudo -n true` once per session and only feeds the password when sudo actually asks for it.
+// `-k` forces sudo to read that line even when a cached timestamp exists.
 // Without a password we can only hope for NOPASSWD, so `-n` fails fast instead of hanging.
-export function wrapCommand(cmd: string, user: string, password?: string): { command: string, stdinPrefix: string } {
+export function wrapCommand(cmd: string, user: string, password: string | undefined, nopasswd: boolean): { command: string, stdinPrefix: string } {
   const inner = `bash -c ${shellQuote(cmd)}`
 
   if(user === 'root') {
     return { command: inner, stdinPrefix: '' }
   }
 
-  if(password === undefined) {
+  if(nopasswd || password === undefined) {
     return { command: `sudo -n ${inner}`, stdinPrefix: '' }
   }
 
   return { command: `sudo -S -k -p '' ${inner}`, stdinPrefix: `${password}\n` }
+}
+
+// Defense in depth: never let the sudo password reach error messages (and thus alerts).
+export function scrubSecret(text: string, secret: string | undefined): string {
+  if(!secret) return text
+  return text.split(secret).join('***')
 }
 
 function tail(text: string, lines = 20): string {
@@ -110,7 +118,12 @@ export function connectSsh(opts: ConnectOptions): Promise<SshSession> {
     conn.on('ready', () => {
       if(settled) return
       settled = true
-      resolve(makeSession(conn, opts, lastTried?.type === 'publickey' ? 'key' : 'password'))
+      const usedAuth = lastTried?.type === 'publickey' ? 'key' : 'password'
+      createSession(rawExecOn(conn, opts.host), opts, usedAuth, () => conn.end())
+        .then(resolve, err => {
+          conn.end()
+          reject(err)
+        })
     })
 
     conn.on('error', (err: Error & { level?: string }) => {
@@ -148,45 +161,72 @@ export function connectSsh(opts: ConnectOptions): Promise<SshSession> {
   })
 }
 
-function makeSession(conn: Client, opts: ConnectOptions, usedAuth: 'key' | 'password'): SshSession {
-  const exec = (command: string, execOpts: ExecOptions = {}): Promise<ExecResult> => {
-    const { command: wrapped, stdinPrefix } = wrapCommand(command, opts.user, opts.password)
-    const timeoutMs = execOpts.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS
+// Runs an already-wrapped command, writing each stdin part in order. Kept separate from
+// session logic so createSession can be tested without a real connection.
+export type RawExec = (command: string, stdin: (Buffer | string)[], timeoutMs: number, label: string) => Promise<ExecResult>
 
-    return new Promise((resolve, reject) => {
-      conn.exec(wrapped, (err, stream: ClientChannel) => {
-        if(err) return reject(err)
+function rawExecOn(conn: Client, host: string): RawExec {
+  return (command, stdin, timeoutMs, label) => new Promise((resolve, reject) => {
+    conn.exec(command, (err, stream: ClientChannel) => {
+      if(err) return reject(err)
 
-        const stdout: Buffer[] = []
-        const stderr: Buffer[] = []
-        let done = false
+      const stdout: Buffer[] = []
+      const stderr: Buffer[] = []
+      let done = false
 
-        const timer = setTimeout(() => {
-          if(done) return
-          done = true
-          stream.close()
-          reject(new SshTimeoutError(opts.host, `command exceeded ${timeoutMs}ms: ${command.slice(0, 80)}`))
-        }, timeoutMs)
+      const timer = setTimeout(() => {
+        if(done) return
+        done = true
+        stream.close()
+        reject(new SshTimeoutError(host, `command exceeded ${timeoutMs}ms: ${label.slice(0, 80)}`))
+      }, timeoutMs)
 
-        stream.on('data', (chunk: Buffer) => stdout.push(chunk))
-        stream.stderr.on('data', (chunk: Buffer) => stderr.push(chunk))
-        stream.on('close', (code: number | null) => {
-          if(done) return
-          done = true
-          clearTimeout(timer)
-          resolve({
-            // null means killed by a signal; report it as a failure, not success
-            code: code ?? 255,
-            stdout: Buffer.concat(stdout).toString('utf8'),
-            stderr: Buffer.concat(stderr).toString('utf8'),
-          })
+      stream.on('data', (chunk: Buffer) => stdout.push(chunk))
+      stream.stderr.on('data', (chunk: Buffer) => stderr.push(chunk))
+      stream.on('close', (code: number | null) => {
+        if(done) return
+        done = true
+        clearTimeout(timer)
+        resolve({
+          // null means killed by a signal; report it as a failure, not success
+          code: code ?? 255,
+          stdout: Buffer.concat(stdout).toString('utf8'),
+          stderr: Buffer.concat(stderr).toString('utf8'),
         })
-
-        if(stdinPrefix) stream.write(stdinPrefix)
-        if(execOpts.stdin !== undefined) stream.write(execOpts.stdin)
-        stream.end()
       })
+
+      for(const part of stdin) stream.write(part)
+      stream.end()
     })
+  })
+}
+
+const PROBE_TIMEOUT_MS = 15_000
+
+// Run unwrapped: `sudo -n` exits non-zero immediately if a password would be required.
+export async function probeNopasswd(raw: RawExec): Promise<boolean> {
+  try {
+    const result = await raw('sudo -n true', [], PROBE_TIMEOUT_MS, 'sudo -n true')
+    return result.code === 0
+  } catch {
+    return false
+  }
+}
+
+export async function createSession(
+  raw: RawExec,
+  opts: Pick<ConnectOptions, 'host' | 'user' | 'password'>,
+  usedAuth: 'key' | 'password',
+  close: () => void,
+): Promise<SshSession> {
+  const nopasswd = opts.user === 'root' ? false : await probeNopasswd(raw)
+
+  const exec = (command: string, execOpts: ExecOptions = {}): Promise<ExecResult> => {
+    const { command: wrapped, stdinPrefix } = wrapCommand(command, opts.user, opts.password, nopasswd)
+    const stdin: (Buffer | string)[] = []
+    if(stdinPrefix) stdin.push(stdinPrefix)
+    if(execOpts.stdin !== undefined) stdin.push(execOpts.stdin)
+    return raw(wrapped, stdin, execOpts.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS, command)
   }
 
   return {
@@ -195,13 +235,12 @@ function makeSession(conn: Client, opts: ConnectOptions, usedAuth: 'key' | 'pass
     async run(command, execOpts) {
       const result = await exec(command, execOpts)
       if(result.code !== 0) {
-        throw new Error(`command failed on ${opts.host} (exit ${result.code}): ${command.slice(0, 80)}\n${tail(result.stderr || result.stdout)}`)
+        const detail = `command failed on ${opts.host} (exit ${result.code}): ${command.slice(0, 80)}\n${tail(result.stderr || result.stdout)}`
+        throw new Error(scrubSecret(detail, opts.password))
       }
       return result
     },
-    close() {
-      conn.end()
-    },
+    close,
   }
 }
 

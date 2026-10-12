@@ -16,6 +16,7 @@ export interface LocalRenderInput {
   /** awgt server side (REMOTE): public key, PSK, port and obfuscation params shared by both tunnel ends. */
   remote: RemoteIdentity['awgt']
   addresses: { client: string, outer: string, tunnel: string }
+  sshPort: number              // ssh.port of this node; input chain must keep it open
   remoteTunnelAddress: string  // REMOTE.tunnel, the awgt Endpoint host
   clientSubnet: string         // e.g. 10.66.0.0/16; awgc gets the first host address
   tunnelSubnet: string         // e.g. 10.255.0.0/30; LOCAL = .1, REMOTE = .2
@@ -30,6 +31,7 @@ export interface RemoteRenderInput {
   identity: RemoteIdentity
   localAwgtPublicKey: string
   addresses: { outer: string, tunnel: string }
+  sshPort: number
   localTunnelAddress: string   // LOCAL.tunnel, the only allowed source for the awgt port
   tunnelSubnet: string
   tunnelMtu: number

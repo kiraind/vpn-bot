@@ -35,6 +35,30 @@ describe('script syntax', () => {
     expect(s).toContain('Unattended-Upgrade::Automatic-Reboot-Time "04:00"')
   })
 
+  it('stdin-fed scripts are wrapped in main() and end with the call', () => {
+    for(const s of [bootstrapScript(), installKeyScript('ssh-ed25519 AAAAkey+/= c', '/root'), disablePasswordScript()]) {
+      expect(s).toMatch(/^#!\/bin\/bash\n/)
+      expect(s).toContain('\nmain() {\n')
+      expect(s.trimEnd().split('\n').at(-1)).toBe('main "$@"')
+    }
+  })
+
+  it('bootstrap keeps stdin away from apt/dkms and reports the tools version', () => {
+    const s = bootstrapScript()
+    expect(s).toMatch(/"\$@" <\/dev\/null\n}/)
+    expect(s).toContain('add-apt-repository -y ppa:amnezia/ppa </dev/null')
+    expect(s).toContain('dkms autoinstall </dev/null')
+    expect(s).toContain('awg --version')
+    expect(s).toContain("dpkg-query -W -f='${Version}' amneziawg-tools")
+    expect(s).toContain('echo "BOOTSTRAP_OK amneziawg-tools=${tools_version:-unknown}"')
+  })
+
+  it('a stdin-reading child cannot swallow the rest of a main()-wrapped script', () => {
+    // `cat` stands in for a dpkg maintainer script that drains stdin.
+    const r = spawnSync('bash', ['-s'], { input: '#!/bin/bash\nset -euo pipefail\nmain() {\ncat >/dev/null\necho DONE\n}\n\nmain "$@"\n' })
+    expect(r.stdout.toString()).toBe('DONE\n')
+  })
+
   it('installKeyScript rejects multi-line keys', () => {
     expect(() => installKeyScript('ssh-ed25519 AAAA\nrm -rf /', '/root')).toThrow()
   })

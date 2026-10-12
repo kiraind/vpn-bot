@@ -45,6 +45,12 @@ if [ -z "$DEV" ]; then
   echo "vpn-routing: cannot parse default route: $DEF" >&2
   exit 1
 fi
+# Keep onlink (gateway outside the subnet, e.g. /32 VPS addresses), else the kernel rejects
+# the nexthop with "Nexthop has invalid gateway" and table ${tunnelTable} stays empty.
+ONLINK=''
+if awk '{for(i=1;i<=NF;i++) if($i=="onlink") f=1} END{exit !f}' <<<"$DEF"; then
+  ONLINK='onlink'
+fi
 
 add_rule() {
   local mark=$1 table=$2
@@ -57,7 +63,8 @@ add_rule ${viaRemote} ${remoteTable}
 
 # awgt's own UDP packets leave from LOCAL.tunnel (R-L1).
 if [ -n "$GW" ]; then
-  ip -4 route replace default via "$GW" dev "$DEV" src "$TUNNEL_SRC" table ${tunnelTable}
+  # shellcheck disable=SC2086 # $ONLINK is intentionally unquoted: empty must expand to nothing
+  ip -4 route replace default via "$GW" dev "$DEV" $ONLINK src "$TUNNEL_SRC" table ${tunnelTable}
 else
   ip -4 route replace default dev "$DEV" src "$TUNNEL_SRC" table ${tunnelTable}
 fi

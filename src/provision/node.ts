@@ -7,6 +7,7 @@ import { parseAwgDump } from '../health/dump'
 import { connectSsh, shellQuote, waitForSsh } from '../ssh/client'
 import type { ConnectOptions, ExecResult, SshSession } from '../ssh/client'
 import {
+  BOOTSTRAP_OK,
   EXIT_CODES,
   REBOOT_REQUIRED,
   applyCommand,
@@ -115,7 +116,13 @@ async function bootstrap(ctx: Ctx, initial: SshSession): Promise<SshSession> {
     deps.onPhase?.('bootstrapping')
     const res: ExecResult = await session.exec('bash -s', { stdin: bootstrapScript() })
 
-    if(res.code === 0) return session
+    if(res.code === 0) {
+      // Exit 0 without the marker means bash stopped reading the script early (see wrapMain).
+      const ok = res.stdout.split('\n').find(l => l.startsWith(BOOTSTRAP_OK))
+      if(!ok) throw new Error('bootstrap failed: script ended early')
+      ctx.log(`${target.node}: ${ok.trim()}`)
+      return session
+    }
 
     if(res.code === EXIT_CODES.rebootRequired || res.stdout.includes(REBOOT_REQUIRED)) {
       if(reboots >= MAX_REBOOTS) throw new Error('amneziawg module build failed')

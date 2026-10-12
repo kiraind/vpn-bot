@@ -43,14 +43,14 @@ function chain(name: string, hook: string, rules: string[]): string[] {
   return [`  chain ${name} {`, `    ${hook}`, ...rules.map(r => `    ${r}`), '  }']
 }
 
-function inputChain(outer: string, awgRule: string): string[] {
+function inputChain(outer: string, sshPort: number, awgRule: string): string[] {
   return chain('input', 'type filter hook input priority filter; policy drop;', [
     'iifname "lo" accept',
     'ct state invalid drop',
     'ct state established,related accept',
     'meta l4proto icmp accept',
     `meta l4proto ipv6-icmp icmpv6 type { ${ICMPV6_TYPES.join(', ')} } accept`,
-    `ip daddr ${bareIp(outer)} tcp dport 22 accept`,
+    `ip daddr ${bareIp(outer)} tcp dport ${sshPort} accept`,
     awgRule,
   ])
 }
@@ -73,7 +73,7 @@ export function renderLocalNft(input: LocalRenderInput): string {
     renderSet('geo_home', input.geoHome),
     renderSet('force_remote', input.forceRemote),
     renderSet('private', PRIVATE_RANGES),
-    inputChain(input.addresses.outer,
+    inputChain(input.addresses.outer, input.sshPort,
       `ip daddr ${bareIp(input.addresses.client)} udp dport ${input.identity.awgc.listenPort} accept`),
     // R-L3: unmarked = home (main table), 0x52 = via REMOTE (table 152).
     chain('prerouting', 'type filter hook prerouting priority mangle; policy accept;', [
@@ -101,7 +101,7 @@ export function renderLocalNft(input: LocalRenderInput): string {
 
 export function renderRemoteNft(input: RemoteRenderInput): string {
   return ruleset([
-    inputChain(input.addresses.outer,
+    inputChain(input.addresses.outer, input.sshPort,
       `ip saddr ${bareIp(input.localTunnelAddress)} ip daddr ${bareIp(input.addresses.tunnel)} udp dport ${input.identity.awgt.listenPort} accept`),
     chain('forward', 'type filter hook forward priority filter; policy drop;', [
       'meta nfproto ipv6 drop',

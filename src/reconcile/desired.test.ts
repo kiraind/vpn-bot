@@ -43,6 +43,22 @@ describe('buildTargets', () => {
     expect(inputs.remote.localAwgtPublicKey).toBe(getLocalIdentity(ctx.db, 'main').awgt.publicKey)
   })
 
+  it('passes each node ssh.port into its render input and nftables', () => {
+    const ctx = makeCtx(c => {
+      c.sites[0].local.ssh.port = 2222
+      c.sites[0].remote.ssh.port = 2200
+    })
+    const site = ctx.config().sites[0]
+    const inputs = buildRenderInputs(ctx, site)
+    expect(inputs.local.sshPort).toBe(2222)
+    expect(inputs.remote.sshPort).toBe(2200)
+    const { local, remote } = buildTargets(ctx, site, '1')
+    const nft = (t: typeof local) => t.files.map(f => f.content).join('\n')
+    expect(nft(local)).toContain('tcp dport 2222 accept')
+    expect(nft(remote)).toContain('tcp dport 2200 accept')
+    expect(nft(local)).not.toContain('tcp dport 22 ')
+  })
+
   it('is deterministic and the hash covers the coordinator version', () => {
     const ctx = makeCtx()
     const site = ctx.config().sites[0]

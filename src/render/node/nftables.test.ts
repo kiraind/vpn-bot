@@ -18,6 +18,7 @@ function localInput(over: Partial<LocalRenderInput> = {}): LocalRenderInput {
     },
     remote: { privateKey: 'rpriv', publicKey: 'rpub', presharedKey: 'psk', listenPort: 41000, protocol: 'awg2' as const, params },
     addresses: { client: '203.0.113.10', outer: '203.0.113.11', tunnel: '203.0.113.12' },
+    sshPort: 22,
     remoteTunnelAddress: '198.51.100.20',
     clientSubnet: '10.66.0.0/16',
     tunnelSubnet: '10.255.0.0/30',
@@ -29,15 +30,17 @@ function localInput(over: Partial<LocalRenderInput> = {}): LocalRenderInput {
   }
 }
 
-function remoteInput(): RemoteRenderInput {
+function remoteInput(over: Partial<RemoteRenderInput> = {}): RemoteRenderInput {
   return {
     node: 'main/remote',
     identity: { role: 'remote', awgt: { privateKey: 'rpriv', publicKey: 'rpub', presharedKey: 'psk', listenPort: 41000, protocol: 'awg2' as const, params } },
     localAwgtPublicKey: 'tpub',
     addresses: { outer: '198.51.100.21', tunnel: '198.51.100.20' },
+    sshPort: 22,
     localTunnelAddress: '203.0.113.12',
     tunnelSubnet: '10.255.0.0/30',
     tunnelMtu: 1380,
+    ...over,
   }
 }
 
@@ -64,6 +67,12 @@ describe('renderLocalNft', () => {
     expect(out).toContain('ip daddr 203.0.113.10 udp dport 51820 accept')
     expect(out.match(/dport 22/g)).toHaveLength(1)
     expect(out.match(/udp dport/g)).toHaveLength(1)
+  })
+
+  it('opens the configured non-22 SSH port instead of 22', () => {
+    const custom = renderLocalNft(localInput({ sshPort: 2222 }))
+    expect(custom).toContain('ip daddr 203.0.113.11 tcp dport 2222 accept')
+    expect(custom).not.toContain('tcp dport 22 ')
   })
 
   it('renders geo sets with deduplicated elements', () => {
@@ -130,6 +139,12 @@ describe('renderRemoteNft', () => {
     expect(out).toContain('ip daddr 198.51.100.21 tcp dport 22 accept')
     expect(out).not.toContain('set geo_home')
     expect(out).not.toContain('awgc')
+  })
+
+  it('opens the configured non-22 SSH port instead of 22', () => {
+    const custom = renderRemoteNft(remoteInput({ sshPort: 2200 }))
+    expect(custom).toContain('ip daddr 198.51.100.21 tcp dport 2200 accept')
+    expect(custom).not.toContain('tcp dport 22 ')
   })
 
   it('forwards and NATs tunnel traffic', () => {

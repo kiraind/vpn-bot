@@ -6,7 +6,7 @@ import { packTar } from './tar'
 // reboot lives in its own files (R-P5); these scripts only install and (re)start them.
 
 /** Bump whenever any script below changes; the reconciler mixes it into desiredHash. */
-export const SCRIPTS_VERSION = '1'
+export const SCRIPTS_VERSION = '2'
 
 /** Exit codes the reconciler maps to the runbook's error strings (runbook 3.5). */
 export const EXIT_CODES = {
@@ -22,16 +22,32 @@ export const EXIT_CODES = {
 /** Line printed (with exit 100) when the node must reboot before bootstrap can continue. */
 export const REBOOT_REQUIRED = 'REBOOT_REQUIRED'
 
+/** Line bootstrap prints on success; the coordinator requires it, so an early exit 0 is a failure. */
+export const BOOTSTRAP_OK = 'BOOTSTRAP_OK'
+
+/**
+ * These scripts are fed to `bash -s` on stdin, and bash reads a piped script command by command:
+ * a child that reads stdin (dpkg maintainer scripts, debconf, dkms) would swallow the rest and the
+ * script would end with exit 0. Wrapping the body in main() makes bash parse it all before running.
+ */
+function wrapMain(head: string, body: string): string {
+  return `#!/bin/bash
+${head}set -euo pipefail
+
+main() {
+${body}}
+
+main "$@"
+`
+}
+
 /** POSIX single-quote escaping: safe for any string, including newlines. */
 export function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`
 }
 
 export function bootstrapScript(): string {
-  return `#!/bin/bash
-# Bootstrap a clean Ubuntu 24.04 node (spec 7.2). Idempotent: safe to re-run at any point.
-set -euo pipefail
-export DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1
+  return wrapMain('# Bootstrap a clean Ubuntu 24.04 node (spec 7.2). Idempotent: safe to re-run at any point.\n', `export DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1
 
 os=$(. /etc/os-release 2>/dev/null && echo "$ID $VERSION_ID" || true)
 if [ "$os" != "ubuntu 24.04" ]; then echo 'unsupported os' >&2; exit ${EXIT_CODES.unsupportedOs}; fi
@@ -42,7 +58,7 @@ esac
 
 apt_get() {
   apt-get -y -o DPkg::Lock::Timeout=600 \\
-    -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"
+    -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" </dev/null
 }
 
 apt_get update
@@ -50,13 +66,18 @@ apt_get full-upgrade
 apt_get install software-properties-common nftables unattended-upgrades "linux-headers-$(uname -r)"
 # Headers metapackage for the running flavour, so DKMS rebuilds the module for future kernels.
 flavour=$(uname -r | sed 's/^[0-9.]*-[0-9]*-//')
-if apt-cache show "linux-headers-$flavour" >/dev/null 2>&1; then apt_get install "linux-headers-$flavour"; fi
+if apt-cache show "linux-headers-$flavour" </dev/null >/dev/null 2>&1; then apt_get install "linux-headers-$flavour"; fi
 
 if ! grep -rqs 'amnezia/ppa' /etc/apt/sources.list /etc/apt/sources.list.d/; then
-  add-apt-repository -y ppa:amnezia/ppa
+  add-apt-repository -y ppa:amnezia/ppa </dev/null
   apt_get update
 fi
 apt_get install amneziawg amneziawg-tools
+if ! awg --version </dev/null >/dev/null 2>&1; then echo 'amneziawg-tools broken: awg --version failed' >&2; exit 1; fi
+tools_version=unknown
+if command -v dpkg-query >/dev/null 2>&1; then
+  tools_version=$(dpkg-query -W -f='\${Version}' amneziawg-tools 2>/dev/null </dev/null || echo unknown)
+fi
 
 cat > /etc/apt/apt.conf.d/52vpn-node-unattended <<'EOF'
 APT::Periodic::Update-Package-Lists "1";
@@ -82,7 +103,7 @@ if [ -n "$newest" ] && [ "$newest" != "$running" ]; then kernel_pending=1; fi
 if [ -e /var/run/reboot-required ]; then echo ${REBOOT_REQUIRED}; exit ${EXIT_CODES.rebootRequired}; fi
 
 if ! modprobe amneziawg 2>/dev/null; then
-  dkms autoinstall >&2 || true
+  dkms autoinstall </dev/null >&2 || true
   if ! modprobe amneziawg; then
     if [ "$kernel_pending" = 1 ]; then echo ${REBOOT_REQUIRED}; exit ${EXIT_CODES.rebootRequired}; fi
     echo 'amneziawg module build failed' >&2
@@ -90,8 +111,8 @@ if ! modprobe amneziawg 2>/dev/null; then
   fi
 fi
 
-echo BOOTSTRAP_OK
-`
+echo "${BOOTSTRAP_OK} amneziawg-tools=\${tools_version:-unknown}"
+`)
 }
 
 const SSH_KEY_RE = /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/=]+( [^\n\r]*)?$/
@@ -103,9 +124,7 @@ export function installKeyScript(publicKey: string, homeDir: string): string {
   if(!homeDir.startsWith('/') || /[\n\r]/.test(homeDir)) throw new Error('installKeyScript: bad home dir')
   // Match on "type base64" only, so a changed comment doesn't add a duplicate line.
   const keyBody = key.split(' ').slice(0, 2).join(' ')
-  return `#!/bin/bash
-set -euo pipefail
-home=${shellQuote(homeDir)}
+  return wrapMain('', `home=${shellQuote(homeDir)}
 key=${shellQuote(key)}
 body=${shellQuote(keyBody)}
 owner=$(stat -c %u:%g "$home")
@@ -120,14 +139,12 @@ chown "$owner" "$home/.ssh" "$home/.ssh/authorized_keys"
 chmod 700 "$home/.ssh"
 chmod 600 "$home/.ssh/authorized_keys"
 echo KEY_INSTALLED
-`
+`)
 }
 
 /** Only after a key login was verified (spec 7.2 step 2). 00- sorts first; sshd keeps the first value. */
 export function disablePasswordScript(): string {
-  return `#!/bin/bash
-set -euo pipefail
-f=/etc/ssh/sshd_config.d/00-vpn-coordinator.conf
+  return wrapMain('', `f=/etc/ssh/sshd_config.d/00-vpn-coordinator.conf
 cat > "$f.tmp" <<'EOF'
 PasswordAuthentication no
 KbdInteractiveAuthentication no
@@ -137,7 +154,7 @@ chmod 644 "$f"
 if ! sshd -t; then rm -f "$f"; echo 'sshd config check failed' >&2; exit 1; fi
 systemctl try-reload-or-restart ssh
 echo PASSWORD_DISABLED
-`
+`)
 }
 
 export function readMarkerCommand(): string {

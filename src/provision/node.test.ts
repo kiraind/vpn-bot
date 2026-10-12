@@ -197,6 +197,8 @@ describe('provisionNode', () => {
       [{ code: 10, stderr: 'unsupported os\n' }, /^unsupported os$/],
       [{ code: 11, stderr: 'x' }, /^amneziawg module build failed$/],
       [{ code: 1, stderr: 'line1\nE: apt broke\n' }, /bootstrap failed \(exit 1\): [\s\S]*E: apt broke/],
+      // A stdin-reading child swallowed the rest of the script: exit 0 but no marker.
+      [{ code: 0, stdout: 'Reading package lists...\n' }, /^bootstrap failed: script ended early$/],
     ]
     for(const [bootstrap, re] of cases) {
       const w = world([{ respond: node({ bootstrap }) }])
