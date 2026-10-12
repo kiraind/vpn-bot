@@ -37,7 +37,8 @@ async function main() {
 
   // The bot token is read once; changing it needs a restart.
   const bot = new TelegramBot(config().telegram.botToken, {
-    polling: { params: { allowed_updates: ['message', 'callback_query', 'chat_member'] } },
+    // getUpdates is sent form-encoded, so the list must be a JSON string or Telegram ignores it (and chat_member is off by default).
+    polling: { params: { allowed_updates: JSON.stringify(['message', 'callback_query', 'chat_member']) as unknown as string[] } },
   })
   const messenger = telegramMessenger(bot)
 
@@ -115,8 +116,9 @@ async function main() {
 
   bot.on('polling_error', e => console.error('telegram polling error:', e.message))
 
-  // R-O5: after an identity change the configs' revision moves; bot-only owners get a new .conf.
-  ctx.events.on('identity-changed', () => {
+  // R-O5: once LOCAL runs the new state (rotated params, new client address, reactivated user),
+  // owners of bot-issued configs whose revision moved get a new .conf.
+  ctx.events.on('local-applied', () => {
     resendStaleBotConfigs(ctx, messenger).catch(e => console.error('resend failed:', e))
   })
 

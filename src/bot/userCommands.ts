@@ -188,7 +188,30 @@ export async function sendConfigToUser(ctx: AppContext, messenger: Messenger, ro
 }
 
 /** R-O5: resends bot-issued configs whose server-side parameters changed. Returns how many were sent. */
-export async function resendStaleBotConfigs(ctx: AppContext, messenger: Messenger): Promise<number> {
+// Runs never overlap: overlapping triggers (several sites, startup + first apply) would otherwise
+// send the same .conf twice, since rows are marked delivered only after sending.
+let resendRunning: Promise<number> | null = null
+let resendAgain = false
+
+export function resendStaleBotConfigs(ctx: AppContext, messenger: Messenger): Promise<number> {
+  if(resendRunning) {
+    resendAgain = true
+    return resendRunning
+  }
+  resendRunning = (async () => {
+    let total = 0
+    do {
+      resendAgain = false
+      total += await resendOnce(ctx, messenger)
+    } while(resendAgain)
+    return total
+  })().finally(() => {
+    resendRunning = null
+  })
+  return resendRunning
+}
+
+async function resendOnce(ctx: AppContext, messenger: Messenger): Promise<number> {
   let sent = 0
   for(const row of staleBotConfigs(ctx)) {
     try {

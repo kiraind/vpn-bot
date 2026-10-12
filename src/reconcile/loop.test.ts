@@ -259,6 +259,17 @@ describe('control', () => {
     expect(reports.map(r => r.outcome)).toEqual(['applied', 'applied'])
   })
 
+  it('emits local-applied only after LOCAL actually applied (R-O5 resend point)', async () => {
+    const h = setup()
+    const applied: string[] = []
+    h.ctx.events.on('local-applied', node => applied.push(node))
+    await h.rec.applyNow()
+    expect(applied).toEqual(['main/local'])
+    h.provision.mockResolvedValue({ outcome: 'up-to-date', bootstrapped: false })
+    await h.rec.applyNow()
+    expect(applied).toEqual(['main/local'])
+  })
+
   it('trust clears the pinned key of the node address; unknown node is an error', async () => {
     const h = setup()
     h.ctx.db.prepare("INSERT INTO known_hosts (address, host_key, first_seen_at) VALUES ('203.0.113.11', 'SHA256:old', 'x')").run()

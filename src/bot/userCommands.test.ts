@@ -303,6 +303,15 @@ describe('resendStaleBotConfigs', () => {
     expect(await resendStaleBotConfigs(t.ctx, t.messenger)).toBe(0)
   })
 
+  it('overlapping runs coalesce instead of sending the same config twice', async () => {
+    const t = setup()
+    await t.send('/add phone')
+    t.calls.length = 0
+    rotateParams(t.ctx.db, 'main', 'clients')
+    await Promise.all([resendStaleBotConfigs(t.ctx, t.messenger), resendStaleBotConfigs(t.ctx, t.messenger)])
+    expect(t.of('sendDocument')).toHaveLength(1)
+  })
+
   it('keeps going when a send fails', async () => {
     const t = setup()
     await t.send('/add a')

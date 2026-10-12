@@ -319,6 +319,7 @@ export class Reconciler implements ReconcilerControl {
         WHERE node = ?
       `).run(target.hash, this.now().toISOString(), target.node)
       if(prev.consecutive_failures > 0) await this.ctx.alert(`${target.node}: снова в порядке`)
+      if(result.outcome === 'applied' && target.role === 'local') this.ctx.events.emit('local-applied', target.node)
       return { node: target.node, outcome: result.outcome }
     } catch(err) {
       const message = errorMessage(err)

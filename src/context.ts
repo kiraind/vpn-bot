@@ -15,6 +15,8 @@ export interface AppEvents {
   'peers-changed': []
   /** Node identity changed (/rotate): every node of the site needs an apply. */
   'identity-changed': [site: string]
+  /** A LOCAL node just applied new state; configs whose revision moved now work (R-O5 resend point). */
+  'local-applied': [node: string]
 }
 
 export interface AppContext {
