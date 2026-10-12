@@ -4,66 +4,64 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Telegram bot that lets members of a specific Telegram chat self-service AmneziaWG VPN accounts. Membership in the configured Telegram chat is the sole access control: the bot creates/lists/revokes AmneziaWG peers and periodically revokes peers belonging to users who have left the chat. There is no HTTP admin API involved — the AmneziaWG server runs `awg`/`awg-quick` inside a Docker container, and this Node process (running on the host) manages it entirely by shelling out via `docker exec` (see `examples.md` for the reference commands this is built on).
+The v2 "VPN coordinator": a single Node process that owns a two-hop AmneziaWG VPN (clients → LOCAL → REMOTE, traffic to the home country exits at LOCAL, everything else at REMOTE). Membership in one Telegram chat is the sole access control. The coordinator holds all state (declarative `config.yaml` + SQLite DB), provisions and reconciles clean Ubuntu 24.04 nodes over SSH, and serves two front ends: a Telegram bot and an HTTPS API for the AmneziaVPN fork ([kiraind/amnezia-client](https://github.com/kiraind/amnezia-client)). Nodes are cattle: replacing a server means changing its address/password in the config.
+
+- Spec (Russian, numbered requirements `R-*` / acceptance criteria `AC-*`): `docs/spec/coordinator-spec.md`. Reference requirement numbers in code comments and commits.
+- Ops runbook (Russian): `docs/spec/runbook.md`.
+- `legacy/` is the old single-server bot (docker exec into one AmneziaWG container). Reference only — not built, not imported.
 
 ## Commands
 
 ```
-npm run dev      # run with nodemon + ts-node against src/index.ts
-npm run build    # compile TypeScript to dist/ (tsc)
-npm start         # run compiled dist/index.js
+npm run dev           # tsx watch src/index.ts
+npm run build         # tsc → dist/
+npm start             # node dist/index.js
+npm test              # vitest run (unit tests live next to code as *.test.ts)
+npm run typecheck     # tsc --noEmit -p tsconfig.test.json (includes tests)
+npm run check-config [-- <path>]           # validate config.yaml without starting (needs build)
+npm run restore -- <backup.tar> [--force]  # unpack a decrypted backup into DB/config/SSH-key paths (needs build)
+npm run update        # git pull && npm ci && npm run build && npm run pm2:reload
+npm run pm2:start | pm2:stop | pm2:restart | pm2:reload | pm2:delete | pm2:logs | pm2:save | pm2:startup
 ```
 
-There is no test suite (`npm test` is a stub) and no linter configured.
-
-Production deploy uses pm2 (see README.md):
-
-```
-npm ci && npm run build && pm2 start dist/index.js --name vpn-bot && pm2 save
-```
-
-The bot process needs permission to run `docker exec` against the AmneziaWG container (e.g. run as root, or as a user in the `docker` group).
+The pm2 process is named `vpn-coordinator`. CI (`.github/workflows/ci.yml`) runs typecheck, build and tests on Node 22; some tests need `nft` and `age` installed.
 
 ## Configuration
 
-Config is loaded from environment variables via dotenv in `src/config.ts`:
-
-- `TELEGRAM_BOT_TOKEN` — bot token (required)
-- `TELEGRAM_CHAT_ID` — the chat whose membership gates VPN access (required)
-- `STATE_PATH` — directory for persisted JSON state (required)
-- `AWG_CONTAINER` — name of the Docker container running AmneziaWG, e.g. `amnezia-awg2` (required)
-- `AWG_ENDPOINT_HOST` — public host/IP put in client configs' `Endpoint =` (required); the port is read live from the server's `ListenPort`
-- `AWG_DNS` — DNS server(s) put verbatim in client configs' `DNS =`, e.g. `172.29.172.254, 1.1.1.1` (required)
-- `AWG_INTERFACE` — AmneziaWG interface name inside the container (optional, default `awg0`)
-- `AWG_CONFIG_PATH` — path to the interface's conf file inside the container (optional, default `/opt/amnezia/awg/awg0.conf`)
-
-`docker-compose.yml` in this repo is stale (it was for the old wg-easy deployment) — the AmneziaWG container is deployed/managed separately and is out of scope here.
+- `config.yaml` — default `/etc/vpn-coordinator/config.yaml`, override with `VPN_COORDINATOR_CONFIG`. Schema: `src/config/schema.ts` (zod), annotated example: `examples/config.example.yaml`. Holds only addresses, SSH credentials and policy (telegram bot/chat/admins, api listen/publicUrl, client subnet/MTU/DNS/protocol, tunnel, routing, sites with `local`/`remote` nodes). `${VAR}` references are expanded from the environment; `.env` in the working directory is loaded via dotenv, so secrets can live there.
+- `VPN_COORDINATOR_DB` — SQLite path, default `/var/lib/vpn-coordinator/state.db`.
+- Coordinator SSH key: `/var/lib/vpn-coordinator/ssh/id_ed25519` (generated on first start). Backup public key: `/etc/vpn-coordinator/backup.pub` (age recipient). See `src/paths.ts`.
 
 ## Architecture
 
-**Entry point (`src/index.ts`)** wires up two things on startup:
-1. A Telegram `text` message handler (`handleMessage`).
-2. A cron job (`node-cron`, hourly) that checks Telegram membership for every known username in `STATE_PATH/users.json` and revokes that user's active AmneziaWG peers if they're no longer a chat member.
+`src/index.ts` wires everything: loads config, opens the DB, ensures the coordinator SSH key, starts the Telegram bot (polling, including `chat_member` updates), the fastify API on `api.listen`, the Reconciler (5-min cycles, 1-min health checks, weekly geo refresh), the hourly membership sweep, the daily backup at 03:00 server time, and re-sends stale bot-issued configs after node identity changes. `src/context.ts` is the shared `AppContext` (config, db, alert, events) built once there.
 
-**State** is plain JSON files under `STATE_PATH`, no database:
-- `users.json` — map of Telegram `username -> numeric user id`, populated the first time a user messages the bot.
-- `clients.json` (`src/store/clients.ts`) — the durable record of every client ever created (`ClientRecord[]`, keyed by `id`/`name`), since a raw `awg0.conf` has no notion of client names or history. This is the *only* source of truth for client naming/ownership and for IP address allocation — it is never reconciled against the live container peer list. Revoked clients stay in this file with `enabled: false` (their address/PSK are never reused).
+Module map:
 
-**Naming convention linking Telegram users to VPN clients**: every client record is named `"<telegram-username>:<device-id>"`. This is the *only* link between a Telegram identity and its VPN devices — ownership, listing, and removal are all done by string-matching `client.name.startsWith(`${username}:`)`. Device ids are restricted to `[a-z0-9-]+` (see `handleMessage.ts`).
+- `config/` — `schema.ts` (zod schema, `CoordinatorConfig`), `load.ts` (YAML + `${VAR}` expansion, `DEFAULT_CONFIG_PATH`).
+- `db/index.ts` — SQLite schema with append-only migrations; every module uses the shared `Db` handle.
+- `types.ts` — shared domain types (node identity, rows).
+- `services/` — business logic shared by bot and API: `users` (keyed by Telegram id), `membership` (chat checks; Telegram errors are `unknown`, never `not-member`), `auth` (login codes, device tokens, rate limiting), `configs` (client config issuance/revocation, revisions), `identity` (per-site node keys, ports, obfuscation params).
+- `bot/` — `userCommands` (`/start`, `/info`, `/add`, `/remove`, `/login`, `/devices`), `adminCommands` (`/status`, `/apply`, `/trust`, `/rotate`, `/revoke_user`, `/backup`), `messenger` (thin Bot API seam for tests).
+- `api/server.ts` — fastify client API under `/v1` (`auth/login`, `auth/logout`, `me`, `configs` create/get/status/revoke) plus `/healthz`.
+- `render/` — `clientConfig` (client `.conf`) and `node/` (awg confs, nftables, sysctl, routing/systemd files for LOCAL and REMOTE).
+- `reconcile/` — `desired` (config + DB → files + `desiredHash`), `loop` (periodic and event-driven apply per node), `control` (interface the admin commands use).
+- `provision/` — `node` (bootstrap/apply over SSH), `scripts` (bash run on nodes: bootstrap, `apply.sh`; `SCRIPTS_VERSION`), `tar` (ustar writer for shipping the bundle via stdin).
+- `ssh/` — `client` (ssh2 wrapper, sudo for non-root users, runbook error strings), `keys` (coordinator key), `knownHosts` (TOFU pinning).
+- `health/` — `dump` (`awg show all dump` parser), `evaluate` (site health rules), `notify` (alert/announcement wording).
+- `geo/` — db-ip country lite download, CIDR math, cached geo sets in the DB.
+- `protocol/` — AWG protocol profiles (`awg2`) that generate obfuscation params.
+- `crypto/` — X25519 WG keys in Node crypto, login codes/tokens and their hashes.
+- `ops/backup.ts` — daily age-encrypted backup of DB + config + SSH key, sent to admins.
+- `scripts/` — `checkConfig`, `restore` CLIs.
 
-**`src/checkMembership.ts`** wraps `bot.getChatMember`, retrying up to 5 times (5s apart) on failure before giving up. Returns `[isMember, reason]` where `isMember` is true only for status `administrator`/`creator`/`member`; used both by `handleMessage` (to gate bot commands) and by the hourly cron job (to decide who to ban).
+Key invariants:
 
-**`src/awg/*`** is the only code that talks to the AmneziaWG container, all funneled through `exec.ts`'s `runInContainer(args, input?)` (spawns `docker exec [-i] <AWG_CONTAINER> ...args`, piping `input` to stdin when given — this is the sole place that shells out):
-- `conf.ts` — a minimal parser/serializer for the `[Interface]`/`[Peer]` conf format (kept intentionally dumb: whole-file read-modify-write instead of `sed`/`awk` text surgery, because base64 keys contain `/` and `+` that break naive sed delimiters).
-- `serverConfig.ts` — reads and parses the server's `awg0.conf`, deriving its public key from `PrivateKey` via `awg pubkey`; returns the client subnet prefix, `listenPort`, `publicKey`, and `extra` (every AmneziaWG obfuscation param — `Jc`, `Jmin`/`Jmax`, `S1`-`S4`, `H1`-`H4`, `HeaderProtectionKey`, etc. — copied verbatim into client configs so they always match the live server, never duplicated into env vars).
-- `peers.ts` — `genKeyPair`/`genPresharedKey` (via `awg genkey`/`genpsk`/`pubkey`), and `addPeer`/`removePeer` (read the whole conf, mutate the `[Peer]` list, write the whole file back via `sh -c "cat > <path>"`, then non-disruptively reload with `awg syncconf <iface> <(awg-quick strip <path>)`).
-- `clientConfigText.ts` — assembles the actual client `.conf` text from a `ClientRecord` + `ServerConfig`, matching the template in `examples.md`.
-
-**Bot commands** (all handled in `handleMessage.ts`, gated on the sender being a member of `TELEGRAM_CHAT_ID` and having a Telegram username set):
-- `/start`, `/info` — list the user's active devices. Traffic/usage stats are intentionally not tracked or shown (no monitoring).
-- `/add <device-id>` — create a client named `<username>:<device-id>` (`store/clients.ts`'s `createClient`, which allocates the next free address, generates keys, and adds the peer to the live container), then send a QR code (generated locally with the `qrcode` package, no container round trip) and `.conf` file back; those messages plus the config are auto-deleted from the chat after 5 minutes.
-- `/remove <device-id>` — revoke the matching client (`revokeClient`, shared with the hourly ban loop).
-
-Bot replies are in Russian and use Telegram MarkdownV2 for the `/start`/`/info` summary.
-
-Only DMs are handled: `handleMessage` bails out unless `msg.chat.id === msg.from.id`.
+- **Node identity lives in the DB and survives host replacement** (R-S3): keys, listen ports, obfuscation params and internal addresses are generated once per site, never in config. A new host gets the same identity, so clients only see a new Endpoint.
+- **Render is pure** `(config, db) → files` plus `desiredHash`; the reconciler compares it to the node's applied hash and only applies on difference. Bump `SCRIPTS_VERSION` when node scripts change so the hash moves.
+- **`apply.sh` applies peers-only changes live** via `awg syncconf <iface> <(awg-quick strip <iface>)` without dropping sessions; interface-level changes restart the interface.
+- **SSH host keys are TOFU**: pinned on first contact; a mismatch blocks the node until an admin runs `/trust <node>`.
+- **Login codes and device tokens are stored only as hashes** (R-S4).
+- **The `/v1` API contract is shared with the AmneziaVPN fork** (kiraind/amnezia-client); old app builds stay in the wild, so changes must be backward compatible (R-A10). Change both repos together.
+- **The runbook must be updated in the same change as any ops-visible change** (commands, paths, scenarios — R-O1).
+- Bot replies are in Russian; admin replies are plain text, user replies may use MarkdownV2.
