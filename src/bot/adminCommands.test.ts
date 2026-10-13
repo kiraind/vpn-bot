@@ -127,6 +127,28 @@ describe('admin commands', () => {
     expect(text).toContain('4.8.1 — 1')
   })
 
+  it('/status hides an error older than the last success', async () => {
+    const { ctx, deps, sent } = setup()
+    const db = ctx.db
+    db.prepare(`INSERT INTO nodes (name, role, identity, created_at) VALUES ('main/local', 'local', '{}', ?)`).run(now())
+    db.prepare(`
+      INSERT INTO hosts (node, address, phase, last_error, last_error_at, last_ok_at, consecutive_failures, health)
+      VALUES ('main/local', '203.0.113.10', 'ready', 'host key mismatch', '2026-10-13T16:57:33Z', '2026-10-13T17:19:59Z', 0, 'ok')
+    `).run()
+    db.prepare(`
+      INSERT INTO nodes (name, role, identity, created_at) VALUES ('main/remote', 'remote', '{}', ?)
+    `).run(now())
+    db.prepare(`
+      INSERT INTO hosts (node, address, phase, last_error, last_error_at, last_ok_at, consecutive_failures, health)
+      VALUES ('main/remote', '198.51.100.20', 'error', 'ssh timeout', '2026-10-13T17:30:00Z', '2026-10-13T17:20:13Z', 1, 'down')
+    `).run()
+
+    expect(await handleAdminCommand(ctx, deps, msg('/status'))).toBe(true)
+    const text = sent[0].text
+    expect(text).not.toContain('host key mismatch')
+    expect(text).toContain('ошибка (2026-10-13T17:30:00Z): ssh timeout')
+  })
+
   it('/apply and /apply upgrade report per node', async () => {
     const { ctx, deps, sent, control } = setup()
     await handleAdminCommand(ctx, deps, msg('/apply'))

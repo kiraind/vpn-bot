@@ -50,11 +50,13 @@ describe('parseConfigText', () => {
     const text = exampleText
       .replace('client: 203.0.113.10', 'client: not-an-ip')
       .replace('country: RU', 'country: ru')
+      .replace('chatId: -1001234567890', 'chatId: 1001234567890')
     const result = parseConfigText(text, env)
     expect(result.ok).toBe(false)
     if(result.ok) return
     expect(result.errors).toContain('sites.0.local.addresses.client: expected an IPv4 address, optionally with /prefix')
     expect(result.errors).toContain('sites.0.local.country: expected ISO 3166-1 alpha-2 country code')
+    expect(result.errors).toContain('telegram.chatId: expected a group chat id (negative, e.g. -1001234567890); positive ids are users')
   })
 
   it('reports YAML syntax errors and empty documents', () => {

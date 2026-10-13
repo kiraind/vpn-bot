@@ -53,7 +53,9 @@ const siteName = z.string().regex(/^[a-z0-9-]{1,32}$/, 'site name must match [a-
 export const configSchema = z.object({
   telegram: z.object({
     botToken: z.string().min(1),
-    chatId: z.number().int(),
+    // Group and supergroup ids are negative (-100… for supergroups); a positive id is a user's DM,
+    // where membership checks would never pass. Deploy 2026-10-13: the id was copied without the minus.
+    chatId: z.number().int().negative('expected a group chat id (negative, e.g. -1001234567890); positive ids are users'),
     admins: z.array(z.number().int()).min(1),
     announceOutages: z.boolean().default(true),
   }),

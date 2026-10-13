@@ -99,7 +99,9 @@ export function formatStatus(ctx: AppContext, at = new Date()): string {
       }
       lines.push(`  ${node} (${host.address}): фаза ${host.phase}, здоровье ${host.health}`)
       lines.push(`    применено: ${host.applied_hash ? host.applied_hash.slice(0, 8) : '—'}, последний успех: ${host.last_ok_at ?? '—'}`)
-      if(host.last_error) {
+      // An error older than the last success is history (e.g. a host key mismatch before /trust).
+      const errorIsStale = !!host.last_error_at && !!host.last_ok_at && host.last_error_at < host.last_ok_at
+      if(host.last_error && !errorIsStale) {
         lines.push(`    ошибка${host.last_error_at ? ` (${host.last_error_at})` : ''}: ${truncate(host.last_error, ERROR_MAX)}`)
       }
       if(host.consecutive_failures > 0) {
