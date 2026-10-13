@@ -7,6 +7,8 @@ export interface ClientRenderInput {
   server: { publicKey: string; params: ObfuscationParams; endpointHost: string; listenPort: number }
   dns: string[]
   mtu: number
+  /** What the app calls the server (Config.serverName, vpn:// description). */
+  serverName: string
 }
 
 const ALLOWED_IPS = ['0.0.0.0/0', '::/0']
@@ -52,9 +54,19 @@ export function renderClientConf(input: ClientRenderInput): string {
   ].join('\n')
 }
 
-/** Hashing the rendered text itself guarantees: revision changes iff the text changes. */
+/**
+ * Hashing the rendered text itself guarantees: revision changes iff the text changes. The server
+ * name is not in the text but apps show it, so it is hashed too and a rename reaches them (R-A8).
+ */
 export function clientRevision(input: ClientRenderInput): string {
-  return createHash('sha256').update(renderClientConf(input)).digest('hex').slice(0, 8)
+  return createHash('sha256').update(renderClientConf(input)).update(`\0${input.serverName}`).digest('hex').slice(0, 8)
+}
+
+/** "🇳🇱 Нидерланды": regional-indicator flag plus the Russian country name. */
+export function countryServerName(code: string): string {
+  const flag = String.fromCodePoint(...[...code.toUpperCase()].map(c => 0x1f1e6 + c.charCodeAt(0) - 65))
+  const name = new Intl.DisplayNames(['ru'], { type: 'region' }).of(code.toUpperCase()) ?? code
+  return `${flag} ${name}`
 }
 
 /** Qt qCompress(): 4-byte big-endian uncompressed length, then a zlib stream. */
@@ -80,7 +92,7 @@ export function qCompress(data: Buffer): Buffer {
  * Note: upstream processAmneziaConfig() overwrites last_config.mtu with the platform default
  * (1376 on desktop) for every imported Amnezia JSON, so the fork must skip that for R-M1 to hold.
  */
-export function renderVpnKey(input: ClientRenderInput, description: string): string {
+export function renderVpnKey(input: ClientRenderInput): string {
   const { config, server } = input
   const params = Object.fromEntries(orderedParams(server.params))
   const lastConfig = {
@@ -109,7 +121,7 @@ export function renderVpnKey(input: ClientRenderInput, description: string): str
       },
     }],
     defaultContainer: container,
-    description,
+    description: input.serverName,
     dns1: input.dns[0] ?? '',
     dns2: input.dns[1] ?? input.dns[0] ?? '',
     hostName: server.endpointHost,

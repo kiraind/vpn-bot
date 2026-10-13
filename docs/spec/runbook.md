@@ -43,7 +43,7 @@
    }
    ```
    `systemctl reload caddy` — сертификат выпустится сам.
-4. **[коорд]** Конфиг: `mkdir -p /etc/vpn-coordinator && cp examples/config.example.yaml /etc/vpn-coordinator/config.yaml && chmod 600 …`, заполнить: токен бота, `chatId` (у групп он отрицательный, `-100…`; без минуса конфиг не пройдёт проверку), свой tg id в `admins`, `publicUrl`, площадку `main` с адресами и паролями LOCAL/REMOTE.
+4. **[коорд]** Конфиг: `mkdir -p /etc/vpn-coordinator && cp examples/config.example.yaml /etc/vpn-coordinator/config.yaml && chmod 600 …`, заполнить: токен бота, `chatId` (у групп он отрицательный, `-100…`; без минуса конфиг не пройдёт проверку), свой tg id в `admins`, `publicUrl`, площадку `main` с адресами и паролями LOCAL/REMOTE и `remote.country` (страна REMOTE, ISO-код вроде `NL`: так сервер называется в приложении, «🇳🇱 Нидерланды»; если поменять — приложения переименуют сервер сами).
    - Значения вида `${VAR}` подставляются из окружения; их удобно держать в `/opt/vpn-coordinator/.env` (`chmod 600`), например `TELEGRAM_BOT_TOKEN=…`, `MAIN_LOCAL_PASSWORD=…`.
    - Если хостер даёт не root, а пользователя с sudo — указать его в `ssh.user` и **оставить пароль в конфиге**: после установки ключа вход идёт по ключу, но пароль по-прежнему нужен для `sudo`.
 5. **[коорд]** `echo 'age1...' > /etc/vpn-coordinator/backup.pub`.
