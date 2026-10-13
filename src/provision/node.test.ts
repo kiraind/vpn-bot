@@ -195,7 +195,9 @@ describe('provisionNode', () => {
   it('maps bootstrap exit codes to runbook errors', async () => {
     const cases: Array<[Partial<ExecResult>, RegExp]> = [
       [{ code: 10, stderr: 'unsupported os\n' }, /^unsupported os$/],
-      [{ code: 11, stderr: 'x' }, /^amneziawg module build failed$/],
+      [{ code: 11, stderr: 'amneziawg module build failed\n' }, /^amneziawg module build failed$/],
+      [{ code: 11, stderr: 'dkms noise\namneziawg module build failed\nsocket.c:434: error: incompatible pointer type\n' },
+        /^amneziawg module build failed\ndkms noise\nsocket\.c:434: error: incompatible pointer type$/],
       [{ code: 1, stderr: 'line1\nE: apt broke\n' }, /bootstrap failed \(exit 1\): [\s\S]*E: apt broke/],
       // A stdin-reading child swallowed the rest of the script: exit 0 but no marker.
       [{ code: 0, stdout: 'Reading package lists...\n' }, /^bootstrap failed: script ended early$/],
