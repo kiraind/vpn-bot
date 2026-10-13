@@ -133,7 +133,11 @@ async function bootstrap(ctx: Ctx, initial: SshSession): Promise<SshSession> {
     }
 
     if(res.code === EXIT_CODES.unsupportedOs) throw new Error('unsupported os')
-    if(res.code === EXIT_CODES.moduleBuildFailed) throw new Error('amneziawg module build failed')
+    if(res.code === EXIT_CODES.moduleBuildFailed) {
+      // The script follows the runbook line with the first compiler errors from make.log.
+      const detail = res.stderr.split('\n').filter(l => l.trim() && !l.includes('amneziawg module build failed'))
+      throw new Error(['amneziawg module build failed', ...detail.slice(-5)].join('\n').slice(0, 1500))
+    }
     throw new Error(`bootstrap failed (exit ${res.code}): ${tail(res.stderr || res.stdout)}`)
   }
 }

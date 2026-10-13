@@ -45,12 +45,24 @@ describe('script syntax', () => {
 
   it('bootstrap keeps stdin away from apt/dkms and reports the tools version', () => {
     const s = bootstrapScript()
-    expect(s).toMatch(/"\$@" <\/dev\/null\n}/)
+    expect(s).toMatch(/"\$@" <\/dev\/null \|\| rc=\$\?\n/)
     expect(s).toContain('add-apt-repository -y ppa:amnezia/ppa </dev/null')
     expect(s).toContain('dkms autoinstall </dev/null')
     expect(s).toContain('awg --version')
     expect(s).toContain("dpkg-query -W -f='${Version}' amneziawg-tools")
     expect(s).toContain('echo "BOOTSTRAP_OK amneziawg-tools=${tools_version:-unknown}"')
+  })
+
+  it('bootstrap freezes the kernel before upgrading and never lets apt-get exit 100', () => {
+    const s = bootstrapScript()
+    expect(s.indexOf('apt-mark hold')).toBeGreaterThan(-1)
+    expect(s.indexOf('apt-mark hold')).toBeLessThan(s.indexOf('apt_get full-upgrade'))
+    expect(s).not.toContain('linux-headers-$flavour')
+    // apt-get's own failure code is 100, the reboot-required code; a failing apt_get must not reboot the node.
+    const fn = s.slice(s.indexOf('apt_get() {'), s.indexOf('\n}\n', s.indexOf('apt_get() {')) + 3)
+    const r = spawnSync('bash', ['-c', `set -euo pipefail\napt-get() { return 100; }\n${fn}\nmain() { apt_get install x; }\nmain`])
+    expect(r.status).toBe(1)
+    expect(r.stderr.toString()).toContain('apt-get install failed (exit 100)')
   })
 
   it('a stdin-reading child cannot swallow the rest of a main()-wrapped script', () => {

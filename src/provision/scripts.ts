@@ -6,7 +6,7 @@ import { packTar } from './tar'
 // reboot lives in its own files (R-P5); these scripts only install and (re)start them.
 
 /** Bump whenever any script below changes; the reconciler mixes it into desiredHash. */
-export const SCRIPTS_VERSION = '3'
+export const SCRIPTS_VERSION = '4'
 
 /** Exit codes the reconciler maps to the runbook's error strings (runbook 3.5). */
 export const EXIT_CODES = {
@@ -56,17 +56,27 @@ case "$(uname -m)" in
   *) echo 'unsupported os' >&2; exit ${EXIT_CODES.unsupportedOs} ;;
 esac
 
+# apt-get fails with exit 100, which the coordinator reads as "reboot required": map it to 1.
 apt_get() {
+  local rc=0
   apt-get -y -o DPkg::Lock::Timeout=600 \\
-    -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" </dev/null
+    -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" </dev/null || rc=$?
+  if [ "$rc" != 0 ]; then echo "apt-get $1 failed (exit $rc)" >&2; return 1; fi
 }
+
+# Freeze the kernel the image booted: hold every kernel metapackage (names without an ABI
+# version), so neither full-upgrade nor unattended-upgrades moves the node to a new kernel
+# series that amneziawg-dkms may not build for (RUVDS linux-azure rolled 6.8 -> 7.0 on the first
+# deploy and the module did not build). A new kernel comes with a reinstalled node.
+kernel_metas=$(dpkg-query -W -f='\${db:Status-Abbrev} \${Package}\n' 'linux-*' 2>/dev/null </dev/null \\
+  | awk '$1 ~ /^[ih]i$/ { print $2 }' \\
+  | grep -Ev '[0-9]+\.[0-9]+\.[0-9]+-[0-9]+' \\
+  | grep -Ev '^linux-(base|firmware|libc-dev|sound-base|tools-common|cloud-tools-common|doc|source)$' || true)
+if [ -n "$kernel_metas" ]; then apt-mark hold $kernel_metas >/dev/null; fi
 
 apt_get update
 apt_get full-upgrade
 apt_get install software-properties-common nftables unattended-upgrades "linux-headers-$(uname -r)"
-# Headers metapackage for the running flavour, so DKMS rebuilds the module for future kernels.
-flavour=$(uname -r | sed 's/^[0-9.]*-[0-9]*-//')
-if apt-cache show "linux-headers-$flavour" </dev/null >/dev/null 2>&1; then apt_get install "linux-headers-$flavour"; fi
 
 if ! grep -rqs 'amnezia/ppa' /etc/apt/sources.list /etc/apt/sources.list.d/; then
   add-apt-repository -y ppa:amnezia/ppa </dev/null
@@ -107,6 +117,8 @@ if ! modprobe amneziawg 2>/dev/null; then
   if ! modprobe amneziawg; then
     if [ "$kernel_pending" = 1 ]; then echo ${REBOOT_REQUIRED}; exit ${EXIT_CODES.rebootRequired}; fi
     echo 'amneziawg module build failed' >&2
+    log=$(ls -t /var/lib/dkms/amneziawg/*/build/make.log 2>/dev/null | head -n 1 || true)
+    if [ -n "$log" ]; then grep -E 'error|Error' "$log" | head -n 5 >&2 || true; fi
     exit ${EXIT_CODES.moduleBuildFailed}
   fi
 fi
