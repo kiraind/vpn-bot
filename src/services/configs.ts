@@ -5,7 +5,7 @@ import { now } from '../db'
 import type { SiteConfig } from '../config/schema'
 import { genKeyPair, genPresharedKey } from '../crypto/wgKeys'
 import { cidrToRange, intToIp, ipToInt } from '../geo/cidr'
-import { clientRevision, renderClientConf, renderVpnKey, type ClientRenderInput } from '../render/clientConfig'
+import { clientRevision, countryServerName, renderClientConf, renderVpnKey, type ClientRenderInput } from '../render/clientConfig'
 import type { ClientPeer } from '../render/node/input'
 import type { ClientConfigRow, ConfigState, NetworkState } from '../types'
 import { getLocalIdentity } from './identity'
@@ -108,6 +108,7 @@ export function renderInputFor(ctx: AppContext, row: ClientConfigRow, site: Site
     server: { publicKey: awgc.publicKey, params: awgc.params, endpointHost: site.local.addresses.client, listenPort: awgc.listenPort },
     dns: config.clients.dns,
     mtu: config.clients.mtu,
+    serverName: site.remote.country ? countryServerName(site.remote.country) : site.name,
   }
 }
 
@@ -124,7 +125,9 @@ export function configView(ctx: AppContext, row: ClientConfigRow) {
     revision: clientRevision(input),
     createdAt: row.created_at,
     awg: renderClientConf(input),
-    vpnKey: renderVpnKey(input, row.name),
+    // The app names the server after this, not after the device (`name`); old builds ignore it (R-A10)
+    serverName: input.serverName,
+    vpnKey: renderVpnKey(input),
     endpoint: `${input.server.endpointHost}:${input.server.listenPort}`,
   }
 }

@@ -129,6 +129,7 @@ sites:
         outer:  203.0.113.11        # SSH идёт сюда
         tunnel: 203.0.113.12
     remote:
+      country: NL                   # необязательно: страна выхода, имя сервера в приложении
       ssh: { user: root, password: ${MAIN_REMOTE_PASSWORD} }
       addresses:
         outer:  198.51.100.20       # SSH идёт сюда
@@ -240,8 +241,9 @@ HTTPS, JSON, префикс `/v1`. Авторизация — `Authorization: Be
 // Config
 { "id": "uuid", "name": "phone", "revision": "a1b2c3d4", "createdAt": "…",
   "awg": "[Interface]\n…",            // полный текст .conf
-  "vpnKey": "vpn://…",                 // тот же конфиг в формате ключа AmneziaVPN
-  "endpoint": "203.0.113.10:51820" }
+  "vpnKey": "vpn://…",                 // тот же конфиг в формате ключа AmneziaVPN (description = serverName)
+  "endpoint": "203.0.113.10:51820",
+  "serverName": "🇳🇱 Нидерланды" }     // имя сервера в приложении: флаг + страна remote.country (без неё — имя площадки); входит в revision
 
 // ConfigStatus
 { "state": "ok" | "outdated" | "suspended" | "revoked",

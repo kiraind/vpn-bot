@@ -102,6 +102,7 @@ describe('views', () => {
     expect(view.awg).toContain(`PrivateKey = ${row.private_key}`)
     expect(view.endpoint).toMatch(/^203\.0\.113\.10:\d+$/)
     expect(view.vpnKey.startsWith('vpn://')).toBe(true)
+    expect(view.serverName).toBe('🇳🇱 Нидерланды')
     expect(configSummary(ctx, row)).toEqual({ id: row.id, name: 'phone', revision: view.revision, state: 'active', createdAt: row.created_at })
   })
 

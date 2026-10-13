@@ -30,8 +30,10 @@ const ssh = z.object({
   port: z.number().int().min(1).max(65535).default(22),
 })
 
+const countryCode = z.string().regex(/^[A-Z]{2}$/, 'expected ISO 3166-1 alpha-2 country code')
+
 const localNode = z.object({
-  country: z.string().regex(/^[A-Z]{2}$/, 'expected ISO 3166-1 alpha-2 country code'),
+  country: countryCode,
   ssh,
   addresses: z.object({
     client: hostAddress,
@@ -41,6 +43,9 @@ const localNode = z.object({
 })
 
 const remoteNode = z.object({
+  // Where foreign traffic exits; names the server in the app (Config.serverName). Optional so
+  // configs from before it existed still load; without it the site name is shown.
+  country: countryCode.optional(),
   ssh,
   addresses: z.object({
     outer: hostAddress,

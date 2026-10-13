@@ -40,6 +40,7 @@ sites:
         outer:  203.0.113.11        # SSH идёт сюда
         tunnel: 203.0.113.12
     remote:
+      country: NL                   # страна выхода; так сервер называется в приложении («🇳🇱 Нидерланды»)
       ssh: { user: root, password: ${MAIN_REMOTE_PASSWORD} }
       addresses:
         outer:  198.51.100.20       # SSH идёт сюда

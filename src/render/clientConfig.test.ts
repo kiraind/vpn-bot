@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { inflateSync } from 'node:zlib'
-import { clientRevision, renderClientConf, renderVpnKey, type ClientRenderInput } from './clientConfig'
+import { clientRevision, countryServerName, renderClientConf, renderVpnKey, type ClientRenderInput } from './clientConfig'
 
 const input: ClientRenderInput = {
   config: { id: 'u-1', name: 'phone', address: '10.66.0.2', privateKey: 'cPriv+/=', presharedKey: 'psk+/=' },
@@ -12,6 +12,7 @@ const input: ClientRenderInput = {
   },
   dns: ['1.1.1.1', '8.8.8.8'],
   mtu: 1280,
+  serverName: 'My VPN — phone',
 }
 
 function decode(key: string): any {
@@ -77,7 +78,7 @@ describe('clientRevision', () => {
 
 describe('renderVpnKey', () => {
   it('round-trips to the AmneziaVPN native-AWG JSON shape', () => {
-    const json = decode(renderVpnKey(input, 'My VPN — phone'))
+    const json = decode(renderVpnKey(input))
     expect(json.defaultContainer).toBe('amnezia-awg')
     expect(json.description).toBe('My VPN — phone')
     expect(json.hostName).toBe('203.0.113.10')
@@ -108,7 +109,7 @@ describe('renderVpnKey', () => {
   })
 
   it('duplicates a single DNS into dns2', () => {
-    const json = decode(renderVpnKey({ ...input, dns: ['9.9.9.9'] }, 'x'))
+    const json = decode(renderVpnKey({ ...input, dns: ['9.9.9.9'] }))
     expect(json.dns1).toBe('9.9.9.9')
     expect(json.dns2).toBe('9.9.9.9')
   })
@@ -117,5 +118,19 @@ describe('renderVpnKey', () => {
 describe('single DNS', () => {
   it('repeats a lone DNS server so the AmneziaVPN importer accepts the line', () => {
     expect(renderClientConf({ ...input, dns: ['10.0.0.53'] })).toContain('DNS = 10.0.0.53, 10.0.0.53\n')
+  })
+})
+
+describe('server name', () => {
+  it('is a flag plus the Russian country name', () => {
+    expect(countryServerName('NL')).toBe('🇳🇱 Нидерланды')
+    expect(countryServerName('de')).toBe('🇩🇪 Германия')
+  })
+
+  it('moves the revision without touching the conf text', () => {
+    const renamed = { ...input, serverName: '🇳🇱 Нидерланды' }
+    expect(renderClientConf(renamed)).toBe(renderClientConf(input))
+    expect(clientRevision(renamed)).not.toBe(clientRevision(input))
+    expect(decode(renderVpnKey(renamed)).description).toBe('🇳🇱 Нидерланды')
   })
 })
