@@ -50,7 +50,7 @@ Module map:
 - `ssh/` — `client` (ssh2 wrapper, sudo for non-root users, runbook error strings), `keys` (coordinator key), `knownHosts` (TOFU pinning).
 - `health/` — `dump` (`awg show all dump` parser), `evaluate` (site health rules), `notify` (alert/announcement wording).
 - `geo/` — db-ip country lite download, CIDR math, cached geo sets in the DB.
-- `protocol/` — AWG protocol profiles (`awg2`) that generate obfuscation params.
+- `protocol/` — AWG protocol profiles that generate obfuscation params: `awg3` (AmneziaWG 3.1, default) and `awg2` (fallback).
 - `crypto/` — X25519 WG keys in Node crypto, login codes/tokens and their hashes.
 - `ops/backup.ts` — daily age-encrypted backup of DB + config + SSH key, sent to admins.
 - `scripts/` — `checkConfig`, `restore` CLIs.

@@ -9,8 +9,8 @@ import type { ProtocolProfile } from './index'
 //     *JunkSizeMax, defaultTransportPacketJunkSize)
 //   client/core/models/protocols/awgProtocolConfig.{h,cpp} (AwgConstant message sizes,
 //     isPacketSizeEqual, isHeadersEqual)
-// AmneziaVPN pins H1-H4 to 1-4 because AWG 3.1 has HeaderProtectionKey; plain AWG 2.0
-// (the kernel module we run) has no such thing, so H1-H4 are random disjoint ranges here.
+// AmneziaVPN pins H1-H4 to 1-4 because AWG 3.1 has HeaderProtectionKey; plain AWG 2.0 has
+// no such thing, so H1-H4 are random disjoint ranges here. Default is awg3 (./awg3.ts).
 
 export const AWG2_PARAM_KEYS = ['Jc', 'Jmin', 'Jmax', 'S1', 'S2', 'S3', 'S4', 'H1', 'H2', 'H3', 'H4']
 
