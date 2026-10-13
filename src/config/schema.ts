@@ -20,7 +20,7 @@ const hostAddress = z.string().regex(
   'expected an IPv4 address, optionally with /prefix'
 ).transform(value => value.split('/')[0])
 
-export const protocolNames = ['awg2'] as const
+export const protocolNames = ['awg2', 'awg3'] as const
 export const protocolName = z.enum(protocolNames)
 export type ProtocolName = z.infer<typeof protocolName>
 
@@ -67,12 +67,12 @@ export const configSchema = z.object({
     subnet: cidr.default('10.66.0.0/16'),
     mtu: z.number().int().min(1200).max(1500).default(1280),
     dns: z.array(ipv4).min(1).default(['1.1.1.1', '8.8.8.8']),
-    protocol: protocolName.default('awg2'),
+    protocol: protocolName.default('awg3'),
   }).prefault({}),
   tunnel: z.object({
     subnet: cidr.default('10.255.0.0/30'),
     mtu: z.number().int().min(1200).max(1500).default(1380),
-    protocol: protocolName.default('awg2'),
+    protocol: protocolName.default('awg3'),
   }).prefault({}),
   routing: z.object({
     geoSource: z.literal('dbip-lite').default('dbip-lite'),

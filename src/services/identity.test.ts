@@ -1,3 +1,4 @@
+import { getProfile } from '../protocol'
 import { describe, expect, it } from 'vitest'
 import { openDb } from '../db'
 import { ensureSiteIdentities, getLocalIdentity, getRemoteIdentity, PORT_MAX, PORT_MIN, rotateParams, syncProtocols } from './identity'
@@ -12,7 +13,7 @@ describe('ensureSiteIdentities', () => {
     const remote = getRemoteIdentity(db, 'main')
 
     expect(local.role).toBe('local')
-    expect(local.awgc.protocol).toBe('awg2')
+    expect(local.awgc.protocol).toBe('awg3')
     expect(local.awgc.listenPort).toBeGreaterThanOrEqual(PORT_MIN)
     expect(local.awgc.listenPort).toBeLessThanOrEqual(PORT_MAX)
     expect(Object.keys(local.awgc.params)).toContain('H1')
@@ -68,15 +69,16 @@ describe('syncProtocols', () => {
     ensureSiteIdentities(db, config)
     expect(syncProtocols(db, config)).toEqual([])
 
-    // Only awg2 exists today, so simulate an identity left over from another profile
+    // The first deploy ran awg2; the new default awg3 must regenerate params on both interfaces
     const local = getLocalIdentity(db, 'main')
-    const stale = { ...local, awgc: { ...local.awgc, protocol: 'awg1' as never } }
+    const stale = { ...local, awgc: { ...local.awgc, protocol: 'awg2' as const, params: getProfile('awg2').generateParams() } }
     db.prepare('UPDATE nodes SET identity = ? WHERE name = ?').run(JSON.stringify(stale), 'main/local')
 
     expect(syncProtocols(db, config)).toEqual(['main'])
     const synced = getLocalIdentity(db, 'main')
-    expect(synced.awgc.protocol).toBe('awg2')
-    expect(synced.awgc.params).not.toEqual(local.awgc.params)
+    expect(synced.awgc.protocol).toBe('awg3')
+    expect(synced.awgc.params.HeaderProtectionKey).toBeTruthy()
+    expect(synced.awgc.params).not.toEqual(stale.awgc.params)
     expect(synced.awgc.privateKey).toBe(local.awgc.privateKey)
     expect(syncProtocols(db, config)).toEqual([])
   })

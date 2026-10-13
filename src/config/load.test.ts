@@ -19,7 +19,7 @@ describe('parseConfigText', () => {
     expect(config.telegram.chatId).toBe(-1001234567890)
     expect(config.telegram.botToken).toBe('123:abc')
     expect(config.clients.dns).toEqual(['1.1.1.1', '8.8.8.8'])
-    expect(config.tunnel).toEqual({ subnet: '10.255.0.0/30', mtu: 1380, protocol: 'awg2' })
+    expect(config.tunnel).toEqual({ subnet: '10.255.0.0/30', mtu: 1380, protocol: 'awg3' })
     expect(config.sites[0].local.ssh).toEqual({ user: 'root', password: 'p#ss: {weird}', port: 22 })
     expect(config.sites[0].remote.ssh).toEqual({ user: 'root', password: 'remote-pass', port: 22 })
     expect(config.sites[0].local.addresses.client).toBe('203.0.113.10')
