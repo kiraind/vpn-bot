@@ -1,0 +1,46 @@
+# Конфиг VPN-координатора (спека, раздел 5).
+# По умолчанию /etc/vpn-coordinator/config.yaml (или $VPN_COORDINATOR_CONFIG), права 600, не в git.
+# Значения вида ${VAR} подставляются из переменных окружения (и из .env).
+# Проверка без запуска: npm run check-config -- /path/to/config.yaml
+
+telegram:
+  botToken: ${TELEGRAM_BOT_TOKEN}
+  chatId: -1001234567890          # членство в этом чате = доступ
+  admins: [123456789]              # tg id: технические алерты и админ-команды
+  announceOutages: true            # падение/восстановление сети дублировать в чат chatId
+
+api:
+  listen: 127.0.0.1:8080            # за reverse proxy с TLS
+  publicUrl: https://vpn.example.com
+
+clients:
+  subnet: 10.66.0.0/16
+  mtu: 1280
+  # dns: [1.1.1.1, 8.8.8.8]         # DNS в клиентских конфигах (по умолчанию)
+  # protocol: awg2                  # протокол клиентского интерфейса LOCAL (по умолчанию)
+
+# Туннель LOCAL ↔ REMOTE; весь блок необязателен, ниже значения по умолчанию.
+# tunnel:
+#   subnet: 10.255.0.0/30
+#   mtu: 1380
+#   protocol: awg2
+
+routing:
+  geoSource: dbip-lite              # раз в неделю
+  alwaysDirect: []                  # CIDR, всегда через LOCAL.outer
+  alwaysRemote: []                  # CIDR, всегда через REMOTE
+
+sites:
+  - name: main
+    local:
+      country: RU
+      ssh: { user: root, password: ${MAIN_LOCAL_PASSWORD}, port: 22 }
+      addresses:                    # можно с префиксом: 203.0.113.10/24
+        client: 203.0.113.10
+        outer:  203.0.113.11        # SSH идёт сюда
+        tunnel: 203.0.113.12
+    remote:
+      ssh: { user: root, password: ${MAIN_REMOTE_PASSWORD} }
+      addresses:
+        outer:  198.51.100.20       # SSH идёт сюда
+        tunnel: 198.51.100.21

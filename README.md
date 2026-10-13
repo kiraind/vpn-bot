@@ -1,40 +1,36 @@
-# vpn-bot
+# vpn-coordinator
 
-Start:
+Координатор VPN на AmneziaWG по схеме LOCAL → REMOTE: клиенты подключаются к серверу LOCAL, трафик в «свою» страну выходит с LOCAL, остальной — с REMOTE через межсерверный туннель. Доступ есть только у участников заданного Telegram-чата.
 
-```
-npm ci
-npm run build
-npm run pm2:start
-npm run pm2:save
-```
+Координатор хранит всё состояние (декларативный `config.yaml` + SQLite), сам настраивает чистые Ubuntu 24.04 по SSH и поддерживает их в актуальном состоянии. Замена сервера — это замена его адреса и пароля в конфиге. Пользователи получают конфиги через Telegram-бота или через [форк AmneziaVPN](https://github.com/kiraind/amnezia-client) (вход по коду из бота).
 
-Enable autostart on reboot (one-time, needs sudo):
+- Спецификация: [docs/spec/coordinator-spec.md](docs/spec/coordinator-spec.md)
+- Инструкция по эксплуатации (деплой, аварии, команды бота): [docs/spec/runbook.md](docs/spec/runbook.md)
+- Пример конфига: [examples/config.example.yaml](examples/config.example.yaml)
 
-```
-npm run pm2:startup
-```
+## Быстрый старт
 
-This prints a `sudo env PATH=... pm2 startup ...` command — copy it and run it as shown. After that, `pm2 save` (already run above, and again after any future `pm2:start`/`pm2:delete`) snapshots the current process list so pm2 resurrects it on boot.
-
-Update:
+Полная процедура (DNS, Caddy, ключ бэкапов, серверы) — в runbook, раздел 1.
 
 ```
-npm ci
-git pull
-npm run build
-npm run pm2:reload
-npm run pm2:save
+git clone https://github.com/kiraind/vpn-bot /opt/vpn-coordinator && cd /opt/vpn-coordinator
+npm ci && npm run build
+mkdir -p /etc/vpn-coordinator
+cp examples/config.example.yaml /etc/vpn-coordinator/config.yaml && chmod 600 /etc/vpn-coordinator/config.yaml
+# заполнить config.yaml; секреты вида ${VAR} можно положить в /opt/vpn-coordinator/.env
+npm run check-config
+npm run pm2:start && npm run pm2:save
+npm run pm2:startup   # один раз, для автозапуска
 ```
 
-Etc.
+Обновление: `npm run update` (git pull, сборка, `pm2 reload`).
+
+## Разработка
 
 ```
-npm run pm2:restart
-npm run pm2:reload
-npm run pm2:stop
-npm run pm2:delete
-npm run pm2:logs
-
-cat ~/.pm2/logs/vpn-bot-out.log | grep Banned
+npm run dev        # запуск с перезагрузкой
+npm test           # vitest
+npm run typecheck
 ```
+
+Каталог `legacy/` — старый бот для одного сервера, оставлен только для справки.
