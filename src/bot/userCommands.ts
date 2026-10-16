@@ -275,7 +275,8 @@ async function resendOnce(ctx: AppContext, messenger: Messenger): Promise<number
   for(const row of staleBotConfigs(ctx)) {
     try {
       await sendConfigToUser(ctx, messenger, row,
-        `Конфигурация сервера изменилась, вот обновлённый конфиг для ${row.name}. Старый больше не работает.`)
+        `Конфигурация сервера изменилась, вот обновлённый конфиг для ${row.name}. Старый больше не работает.\n\n`
+          + 'Чтобы конфиги обновлялись автоматически, используйте приложение Лёша VPN.')
       sent += 1
     } catch(e) {
       // E.g. the user blocked the bot; the row stays stale and is retried next time
