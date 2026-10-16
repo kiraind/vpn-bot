@@ -52,6 +52,7 @@ Module map:
 - `geo/` — db-ip country lite download, CIDR math, cached geo sets in the DB.
 - `protocol/` — AWG protocol profiles that generate obfuscation params: `awg3` (AmneziaWG 3.1, default) and `awg2` (fallback).
 - `crypto/` — X25519 WG keys in Node crypto, login codes/tokens and their hashes.
+- `metrics/` — `/metrics` for Prometheus (R-O7): `hostStats` (/proc snippet appended to the health probe), `collect` (probes + DB → exposition), `server` (loopback listener). `monitoring/` at the repo root is the docker compose with Prometheus + Grafana and the provisioned dashboard JSON.
 - `ops/backup.ts` — daily age-encrypted backup of DB + config + SSH key, sent to admins.
 - `scripts/` — `checkConfig`, `restore` CLIs.
 

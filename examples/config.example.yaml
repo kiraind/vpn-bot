@@ -13,6 +13,11 @@ api:
   listen: 127.0.0.1:8080            # за reverse proxy с TLS
   publicUrl: https://vpn.example.com
 
+# Метрики для Prometheus/Grafana (monitoring/, runbook 2.4); без блока выключены.
+# Слушать только на 127.0.0.1: эндпоинт без авторизации. Изменение — после рестарта процесса.
+# metrics:
+#   listen: 127.0.0.1:9469
+
 clients:
   subnet: 10.66.0.0/16
   mtu: 1280

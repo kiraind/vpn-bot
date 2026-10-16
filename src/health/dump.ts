@@ -14,6 +14,9 @@ export interface DumpPeer {
   endpoint: string | null
   /** Unix seconds; 0 = never. */
   latestHandshake: number
+  /** Bytes received from / sent to this peer since the interface came up (counters reset with it). */
+  rxBytes: number
+  txBytes: number
 }
 
 export interface DumpInterface {
@@ -67,6 +70,8 @@ export function parseAwgDump(text: string): ParsedDump {
       publicKey: fields[1],
       endpoint: endpoint && endpoint !== '(none)' ? endpoint : null,
       latestHandshake: intOr(fields[5], 0),
+      rxBytes: intOr(fields[6], 0),
+      txBytes: intOr(fields[7], 0),
     })
   }
 

@@ -68,6 +68,10 @@ export const configSchema = z.object({
     listen: z.string().regex(/^[^:]+:\d+$/, 'expected host:port').default('127.0.0.1:8080'),
     publicUrl: z.string().url(),
   }),
+  // Prometheus /metrics on a separate (loopback) listener; off when absent (R-O7).
+  metrics: z.object({
+    listen: z.string().regex(/^[^:]+:\d+$/, 'expected host:port').default('127.0.0.1:9469'),
+  }).optional(),
   clients: z.object({
     subnet: cidr.default('10.66.0.0/16'),
     mtu: z.number().int().min(1200).max(1500).default(1280),

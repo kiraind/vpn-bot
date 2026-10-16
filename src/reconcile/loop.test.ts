@@ -365,7 +365,7 @@ function probeWith(tunnelHandshake: number): NodeProbe {
     dump: {
       interfaces: {
         awgc: { publicKey: 'c', listenPort: 1, peers: [] },
-        awgt: { publicKey: 't', listenPort: 2, peers: [{ publicKey: 'p', endpoint: null, latestHandshake: tunnelHandshake }] },
+        awgt: { publicKey: 't', listenPort: 2, peers: [{ publicKey: 'p', endpoint: null, latestHandshake: tunnelHandshake, rxBytes: 0, txBytes: 0 }] },
       },
     },
   }

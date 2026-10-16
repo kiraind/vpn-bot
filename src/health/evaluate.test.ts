@@ -13,7 +13,7 @@ function dump(ifaces: Record<string, number | null>): ParsedDump {
     interfaces[name] = {
       publicKey: `${name}Pub=`,
       listenPort: 1,
-      peers: hs === null ? [] : [{ publicKey: 'peer=', endpoint: null, latestHandshake: hs }],
+      peers: hs === null ? [] : [{ publicKey: 'peer=', endpoint: null, latestHandshake: hs, rxBytes: 0, txBytes: 0 }],
     }
   }
   return { interfaces }

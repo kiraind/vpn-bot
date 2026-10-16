@@ -47,6 +47,11 @@ export class NodeLock {
   }
 }
 
+export interface ProbeRecord {
+  probe: NodeProbe
+  at: Date
+}
+
 export interface ReconcilerDeps {
   provision: typeof provisionNode
   probe: typeof probeNode
@@ -114,6 +119,8 @@ export class Reconciler implements ReconcilerControl {
   private readonly geoAttempts = new Map<string, { failedAt: number, alerted: string }>()
   /** Nodes whose old host already got a "could not stop" alert in this process. */
   private readonly retireAlerted = new Set<string>()
+  /** Latest health probe per node, for /metrics. */
+  private readonly probes = new Map<string, ProbeRecord>()
   private timers: NodeJS.Timeout[] = []
   private eventTimer: NodeJS.Timeout | null = null
   private eventNodes = new Set<string>()
@@ -130,6 +137,10 @@ export class Reconciler implements ReconcilerControl {
 
   constructor(private readonly ctx: AppContext, private readonly deps: ReconcilerDeps) {
     this.now = deps.now ?? (() => new Date())
+  }
+
+  latestProbes(): ReadonlyMap<string, ProbeRecord> {
+    return this.probes
   }
 
   lock(node: string): NodeLock {
@@ -447,6 +458,8 @@ export class Reconciler implements ReconcilerControl {
     ])
 
     const at = this.now()
+    this.probes.set(localName, { probe: local, at })
+    this.probes.set(remoteName, { probe: remote, at })
     const result = evaluateSite(local, remote, Math.floor(at.getTime() / 1000))
 
     let debouncer = this.debouncers.get(site.name)

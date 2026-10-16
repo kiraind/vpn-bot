@@ -1,0 +1,10 @@
+apiVersion: 1
+providers:
+  - name: vpn
+    folder: ''
+    type: file
+    # The dashboard lives in git: edits made in the UI are lost on update, export JSON into the repo instead.
+    allowUiUpdates: false
+    updateIntervalSeconds: 60
+    options:
+      path: /etc/grafana/dashboards

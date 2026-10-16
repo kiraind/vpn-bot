@@ -1,5 +1,6 @@
 import type { Db } from '../db'
 import { nodeName, type NetworkState } from '../types'
+import type { HostStats } from '../metrics/hostStats'
 import { latestHandshake, type ParsedDump } from './dump'
 
 // Site health rules (spec section 8). Pure except persistSiteHealth; SSH probing lives elsewhere
@@ -17,6 +18,8 @@ export interface NodeProbe {
   error?: string
   /** The probed node's own clock (unix s) at dump time; handshake ages use it to ignore clock skew. */
   nowSec?: number
+  /** CPU/RAM/disk/network of the node for /metrics; absent if reading /proc failed. */
+  stats?: HostStats
 }
 
 export interface SiteHealth {
