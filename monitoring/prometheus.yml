@@ -1,0 +1,10 @@
+# The coordinator's metrics listener (config.yaml: metrics.listen). Node figures refresh once a
+# minute with the health probe, so scraping more often adds nothing.
+global:
+  scrape_interval: 60s
+  scrape_timeout: 20s
+
+scrape_configs:
+  - job_name: vpn-coordinator
+    static_configs:
+      - targets: ['127.0.0.1:9469']

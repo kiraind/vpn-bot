@@ -16,6 +16,7 @@
 | Код | `/opt/vpn-coordinator` (git) | процесс `vpn-coordinator` под pm2 |
 | Секреты для конфига | `/opt/vpn-coordinator/.env` (600, необязательно) | значения для `${VAR}` в `config.yaml` (токен бота, пароли); читается только при старте процесса |
 | Публичный ключ бэкапов | `/etc/vpn-coordinator/backup.pub` | шифрование ежедневного бэкапа |
+| Мониторинг | `/opt/vpn-coordinator/monitoring` (`docker compose`), секреты в `monitoring/.env` | Prometheus + Grafana, раздел 2.4; данные в docker-томах, в бэкап не входят |
 | **Приватный ключ бэкапов** | **только у админа, офлайн** (менеджер паролей) | без него бэкап бесполезен |
 
 Ежедневный бэкап (файл `vpn-backup-YYYY-MM-DD.tar.age` в личке от бота) содержит БД, `config.yaml` и SSH-ключ координатора — этого достаточно, чтобы поднять всё с нуля.
@@ -95,6 +96,35 @@
 Bootstrap замораживает ядро, с которым сервер пришёл от хостера (`apt-mark hold` на метапакеты ядра): ни bootstrap, ни ночные автообновления не переводят узел на новую серию ядра. Причина: модуль `amneziawg` собирается через DKMS и отстаёт от новых ядер. На первом деплое RUVDS-образ с `linux-azure` при `full-upgrade` уехал с 6.8 на 7.0, модуль не собрался, а один сервер не вернулся из перезагрузки. Остальные пакеты обновляются как обычно.
 
 Новое ядро = новый сервер: переустановить ОС у хостера и **[бот]** `/trust <узел>` (3.4). Проверить, что держится: на узле `apt-mark showhold`.
+
+### 2.4 Мониторинг (Grafana)
+
+Координатор отдаёт метрики на `127.0.0.1:9469/metrics`, Prometheus в docker забирает их раз в минуту и хранит год, Grafana показывает готовый дашборд «Лёша VPN»: трафик по пользователям и устройствам, онлайн, куда уходит трафик (REMOTE или напрямую с LOCAL), CPU/RAM/диск/сеть серверов, версии приложения. На LOCAL/REMOTE ничего не ставится: цифры приходят с минутной проверкой по SSH. Наружу открыта только Grafana через Caddy, с паролем.
+
+Первая установка:
+1. **[хостер]** DNS: A-запись для Grafana (например `stats.kiraind.ru`) → IP сервера координатора.
+2. **[коорд]** Docker: `apt install -y docker.io docker-compose-v2`.
+3. **[коорд]** В `/etc/vpn-coordinator/config.yaml` добавить:
+   ```yaml
+   metrics:
+     listen: 127.0.0.1:9469
+   ```
+   затем `npm run pm2:restart` в `/opt/vpn-coordinator` (блок читается только при старте). Проверка: `curl -s 127.0.0.1:9469/metrics | head` — строки `vpn_...`.
+4. **[коорд]** `cd /opt/vpn-coordinator/monitoring && cp .env.example .env && chmod 600 .env`, в `.env` вписать `GRAFANA_URL=https://stats.kiraind.ru` и длинный `GRAFANA_ADMIN_PASSWORD`.
+5. **[коорд]** `docker compose up -d`.
+6. **[коорд]** В `/etc/caddy/Caddyfile` дописать и `systemctl reload caddy`:
+   ```
+   stats.kiraind.ru {
+     reverse_proxy 127.0.0.1:3000
+   }
+   ```
+7. Открыть `https://stats.kiraind.ru`, войти `admin` / пароль из `.env`. Дашборд открывается сразу; графики скоростей заполняются за первые ~5 минут.
+
+Обслуживание:
+- Дашборд и конфиги приходят с `git pull` (`npm run update`); Grafana перечитывает дашборд сама за минуту. Правки дашборда в интерфейсе не сохраняются — нужное изменение вносится в `monitoring/grafana/dashboards/vpn.json` в репозитории.
+- Версии Prometheus/Grafana закреплены в `monitoring/docker-compose.yml`; после их изменения в репозитории: `cd monitoring && docker compose pull && docker compose up -d`.
+- Данные Prometheus живут в docker-томе и в ежедневный бэкап не входят: при переезде координатора история графиков начнётся заново, больше ничего не теряется.
+- Остановить мониторинг: `cd monitoring && docker compose down` (с `-v` — удалить и историю). Координатору это не мешает.
 
 ---
 

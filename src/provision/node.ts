@@ -4,6 +4,7 @@ import type { Db } from '../db'
 import type { CoordinatorKey } from '../ssh/keys'
 import type { NodeProbe } from '../health/evaluate'
 import { parseAwgDump } from '../health/dump'
+import { HOST_STATS_SCRIPT, STATS_LINE, parseHostStats, type HostStats } from '../metrics/hostStats'
 import { connectSsh, shellQuote, waitForSsh } from '../ssh/client'
 import type { ConnectOptions, ExecResult, SshSession } from '../ssh/client'
 import {
@@ -261,17 +262,22 @@ export async function retireNode(
 /** Health probe (spec 8 R-H1). Never throws. */
 // The node's own clock comes along with the dump so handshake ages don't depend on clock skew
 // between the coordinator and the node; awg's exit code is preserved so failures still throw.
-export const PROBE_COMMAND = 'awg show all dump; rc=$?; echo "__now__ $(date +%s)"; exit $rc'
+// Host load figures for /metrics ride along; a failure there never fails the probe.
+export const PROBE_COMMAND = `awg show all dump; rc=$?; echo "__now__ $(date +%s)"; { ${HOST_STATS_SCRIPT}; } 2>/dev/null; exit $rc`
 
-export function splitProbeOutput(stdout: string): { dump: ReturnType<typeof parseAwgDump>, nowSec?: number } {
+export function splitProbeOutput(stdout: string): { dump: ReturnType<typeof parseAwgDump>, nowSec?: number, stats?: HostStats } {
   let nowSec: number | undefined
+  const marked: string[] = []
   const lines = stdout.split('\n').filter(line => {
+    if(!STATS_LINE.test(line.replace(/\r$/, ''))) return true
     const m = /^__now__ (\d+)\s*$/.exec(line)
-    if(!m) return true
-    nowSec = Number(m[1])
+    if(m) nowSec = Number(m[1])
+    else marked.push(line)
     return false
   })
-  return nowSec === undefined ? { dump: parseAwgDump(lines.join('\n')) } : { dump: parseAwgDump(lines.join('\n')), nowSec }
+  const dump = parseAwgDump(lines.join('\n'))
+  const stats = parseHostStats(marked)
+  return { dump, ...(nowSec === undefined ? {} : { nowSec }), ...(stats ? { stats } : {}) }
 }
 
 export async function probeNode(deps: ProvisionDeps, target: Pick<NodeTarget, 'node' | 'host' | 'ssh'>): Promise<NodeProbe> {

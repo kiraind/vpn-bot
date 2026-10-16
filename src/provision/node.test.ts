@@ -230,7 +230,19 @@ describe('probeNode', () => {
     expect(probe.dump?.interfaces.awgt.peers[0].latestHandshake).toBe(1700000000)
     expect(Object.keys(probe.dump!.interfaces)).toEqual(['awgt'])
     expect(probe.nowSec).toBe(1700000100)
+    expect(probe.stats).toBeUndefined()
     expect(w.closed).toEqual([0])
+  })
+
+  it('splits host stats lines off the dump', async () => {
+    const dump = 'awgt\tpriv\tpub\t51820\toff\n'
+    const stats = '__ncpu__ 2\n__mem__ MemTotal: 100\n__net__ eth0 5 6\n'
+    const w = world([{ respond: cmd => cmd === PROBE_COMMAND ? { stdout: dump + '__now__ 1700000100\n' + stats } : undefined }])
+    const probe = await probeNode(deps(w), target)
+    expect(Object.keys(probe.dump!.interfaces)).toEqual(['awgt'])
+    expect(probe.dump!.interfaces.awgt.peers).toEqual([])
+    expect(probe.nowSec).toBe(1700000100)
+    expect(probe.stats).toEqual({ cpus: 2, memTotalBytes: 102400, net: { eth0: { rxBytes: 5, txBytes: 6 } } })
   })
 
   it('reports unreachable on connect or command errors without throwing', async () => {

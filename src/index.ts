@@ -16,6 +16,9 @@ import { createBackup } from './ops/backup'
 import { Reconciler } from './reconcile/loop'
 import { probeNode, provisionNode, retireNode } from './provision/node'
 import { fetchCountryCidrs } from './geo/dbip'
+import { collectMetrics } from './metrics/collect'
+import { readLocalHostStats } from './metrics/hostStats'
+import { startMetricsServer } from './metrics/server'
 
 // Resolved at runtime so it works from both src/ (tsx) and dist/ without pulling package.json into rootDir.
 const coordinatorVersion: string = require('../package.json').version
@@ -140,6 +143,18 @@ async function main() {
 
   reconciler.start()
 
+  // R-O7: read once; turning metrics on or moving the listener needs a restart.
+  const metricsListen = config().metrics?.listen
+  const metricsServer = metricsListen
+    ? await startMetricsServer(metricsListen, async () => collectMetrics(ctx, {
+      probes: reconciler.latestProbes(),
+      coordinatorStats: await readLocalHostStats(),
+      version: coordinatorVersion,
+      now: new Date(),
+    }))
+    : null
+  if(metricsListen) console.log(`metrics listening on ${metricsListen}`)
+
   // R-B1: hourly membership sweep, as in v1.
   cron.schedule('0 0 * * * *', () => {
     sweepMembership(ctx, checker)
@@ -169,6 +184,7 @@ async function main() {
     watcher.stop()
     // pm2 kills after ~1.6 s: don't wait for the in-flight long poll.
     await api.close()
+    metricsServer?.close()
     await bot.stopPolling({ cancel: true })
     db.close()
     process.exit(0)

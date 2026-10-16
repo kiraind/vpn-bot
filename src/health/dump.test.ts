@@ -22,8 +22,8 @@ describe('parseAwgDump', () => {
     expect(Object.keys(dump.interfaces)).toEqual(['awgc', 'awgt'])
     expect(dump.interfaces.awgc).toMatchObject({ publicKey: 'cPub=', listenPort: 51820 })
     expect(dump.interfaces.awgc.peers).toEqual([
-      { publicKey: 'peer1=', endpoint: '1.2.3.4:5555', latestHandshake: 1700000000 },
-      { publicKey: 'peer2=', endpoint: null, latestHandshake: 0 },
+      { publicKey: 'peer1=', endpoint: '1.2.3.4:5555', latestHandshake: 1700000000, rxBytes: 100, txBytes: 200 },
+      { publicKey: 'peer2=', endpoint: null, latestHandshake: 0, rxBytes: 0, txBytes: 0 },
     ])
     expect(dump.interfaces.awgt.listenPort).toBe(0)
     expect(dump.interfaces.awgt.peers).toHaveLength(1)
@@ -41,7 +41,7 @@ describe('parseAwgDump', () => {
       row('awgt', 'short='),
       row('awgt', 'x=', 'psk=', '(none)', '10.0.0.0/24', 42, 0, 0, 'off', 'extra'),
     ].join('\n'))
-    expect(dump.interfaces.awgt.peers).toEqual([{ publicKey: 'x=', endpoint: null, latestHandshake: 42 }])
+    expect(dump.interfaces.awgt.peers).toEqual([{ publicKey: 'x=', endpoint: null, latestHandshake: 42, rxBytes: 0, txBytes: 0 }])
   })
 
   it('latestHandshake picks the newest peer, 0 when absent', () => {
