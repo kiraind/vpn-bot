@@ -196,8 +196,9 @@ describe('configs', () => {
     const token = await login(1)
     for(const [method, url] of [
       ['GET', `/v1/configs/${bobs.id}`], ['GET', `/v1/configs/${bobs.id}/status`], ['DELETE', `/v1/configs/${bobs.id}`],
+      ['PATCH', `/v1/configs/${bobs.id}`],
     ] as const) {
-      const res = await app.inject({ method, url, headers: auth(token) })
+      const res = await app.inject({ method, url, headers: auth(token), ...(method === 'PATCH' ? { payload: { name: 'mine' } } : {}) })
       expect(res.statusCode).toBe(404)
       expect(res.json().error.code).toBe('not_found')
     }
@@ -222,6 +223,42 @@ describe('configs', () => {
     const revoked = await status(config.revision)
     expect(revoked.statusCode).toBe(200)
     expect(revoked.json().state).toBe('revoked')
+  })
+
+  it('PATCH renames, keeps the revision (R-A11)', async () => {
+    const token = await login()
+    const config = (await app.inject({ method: 'POST', url: '/v1/configs', headers: auth(token), payload: { name: 'android' } })).json()
+    await app.inject({ method: 'POST', url: '/v1/configs', headers: auth(token), payload: { name: 'laptop' } })
+    const patch = (payload: unknown, id = config.id, headers: Record<string, string> = auth(token)) =>
+      app.inject({ method: 'PATCH', url: `/v1/configs/${id}`, headers, payload: payload as object })
+
+    const ok = await patch({ name: 'pixel-8' })
+    expect(ok.statusCode).toBe(200)
+    expect(ok.json()).toEqual({ id: config.id, name: 'pixel-8', revision: config.revision, state: 'active', createdAt: config.createdAt })
+    expect((await app.inject({ method: 'GET', url: `/v1/configs/${config.id}`, headers: auth(token) })).json())
+      .toEqual({ ...config, name: 'pixel-8' })
+    expect((await patch({ name: 'pixel-8' })).statusCode).toBe(200)
+
+    const taken = await patch({ name: 'laptop' })
+    expect(taken.statusCode).toBe(409)
+    expect(taken.json().error.code).toBe('name_taken')
+    const bad = await patch({ name: 'Bad!' })
+    expect(bad.statusCode).toBe(400)
+    expect(bad.json().error.code).toBe('invalid_name')
+    for(const payload of [{}, { name: 5 }]) {
+      const res = await patch(payload)
+      expect(res.statusCode).toBe(400)
+      expect(res.json().error.code).toBe('invalid_request')
+    }
+    const missing = await patch({ name: 'x' }, 'no-such-id')
+    expect(missing.statusCode).toBe(404)
+    expect(missing.json().error.code).toBe('not_found')
+    const unauthed = await patch({ name: 'x' }, config.id, {})
+    expect(unauthed.statusCode).toBe(401)
+    expect(unauthed.json().error.code).toBe('invalid_token')
+
+    await app.inject({ method: 'DELETE', url: `/v1/configs/${config.id}`, headers: auth(token) })
+    expect((await patch({ name: 'gone' })).statusCode).toBe(404)
   })
 
   it('unknown routes use the error envelope', async () => {

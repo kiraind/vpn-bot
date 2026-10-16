@@ -3,7 +3,9 @@ import QRCode from 'qrcode'
 import type { AppContext } from '../context'
 import { now } from '../db'
 import type { ClientConfigRow, ConfigState, DeviceTokenRow } from '../types'
-import { configView, createConfig, findConfigByName, listConfigs, markDelivered, revokeConfig, staleBotConfigs } from '../services/configs'
+import {
+  configView, createConfig, findConfigByName, listConfigs, markDelivered, renameConfig, revokeConfig, staleBotConfigs,
+} from '../services/configs'
 import { issueLoginCode, listTokens, revokeTokenForUser } from '../services/auth'
 import type { MemberChecker } from '../services/membership'
 import { getUser, markMembershipChecked, reactivateUser, suspendUser, upsertUser } from '../services/users'
@@ -23,6 +25,11 @@ const NOT_MEMBER = 'Сорри, тебя нет в списках'
 const CHECK_FAILED = 'Не получилось проверить, есть ли ты в чате. Попробуй чуть позже'
 const REVOKED = 'Доступ отозван администратором.'
 const SEND_FAILED = 'Не получилось отправить конфиг, попробуй ещё раз.'
+const NAME_TAKEN = 'Устройство с таким именем уже есть'
+const NO_SUCH_DEVICE = 'Устройства с таким именем нет :('
+const NAME_FORMAT = 'латинские буквы, цифры и черточки (-), до 32 символов ([a-z0-9-]{1,32})'
+const ADD_HINT = `Укажи имя устройства: ${NAME_FORMAT}. Например: /add phone`
+const RENAME_HINT = `Укажи старое и новое имя устройства: ${NAME_FORMAT}. Например: /rename android pixel-8`
 // Telegram refuses to delete messages older than 48 hours; past this there is no point trying
 const DELETE_GIVE_UP_MS = 47 * 60 * 60 * 1000
 
@@ -82,10 +89,10 @@ function denyText(access: Access): string {
   return NOT_MEMBER
 }
 
-/** `/add@MyBot phone` → ['/add', 'phone'] */
-function parseCommand(text: string): [string, string | undefined] {
-  const [head, arg] = text.trim().split(/\s+/)
-  return [head.replace(/@\S*$/, '').toLowerCase(), arg]
+/** `/add@MyBot phone` → ['/add', 'phone']; `/rename a b` → ['/rename', 'a', 'b'] */
+function parseCommand(text: string): [string, string | undefined, string | undefined] {
+  const [head, arg, arg2] = text.trim().split(/\s+/)
+  return [head.replace(/@\S*$/, '').toLowerCase(), arg, arg2]
 }
 
 export async function handleUserMessage(ctx: AppContext, deps: UserCommandDeps, msg: TelegramBot.Message): Promise<void> {
@@ -104,7 +111,7 @@ export async function handleUserMessage(ctx: AppContext, deps: UserCommandDeps, 
   const text = msg.text
   if(!text) return
 
-  const [command, arg] = parseCommand(text)
+  const [command, arg, arg2] = parseCommand(text)
 
   switch(command) {
     case '/start':
@@ -116,6 +123,9 @@ export async function handleUserMessage(ctx: AppContext, deps: UserCommandDeps, 
       return
     case '/remove':
       await removeDevice(ctx, messenger, chatId, arg)
+      return
+    case '/rename':
+      await renameDevice(ctx, messenger, chatId, arg, arg2)
       return
     case '/login':
       await sendLoginCode(ctx, messenger, chatId)
@@ -147,6 +157,7 @@ function infoText(ctx: AppContext, tgId: number): string {
     `\`/start\` или \`/info\` ${escapeMd('— увидеть это сообщение')}\n` +
     `\`/add <name>\` ${escapeMd('— добавить новое устройство')}\n` +
     `\`/remove <name>\` ${escapeMd('— удалить устройство')}\n` +
+    `\`/rename <old> <new>\` ${escapeMd('— переименовать устройство')}\n` +
     `\`/login\` ${escapeMd('— код для входа в приложение')}\n` +
     `\`/devices\` ${escapeMd('— где выполнен вход в приложение')}\n`
 }
@@ -158,10 +169,10 @@ async function addDevice(ctx: AppContext, messenger: Messenger, chatId: number, 
   if('error' in result) {
     const user = getUser(ctx.db, chatId)
     await messenger.sendMessage(chatId, result.error === 'name_taken'
-      ? 'Устройство с таким именем уже есть'
+      ? NAME_TAKEN
       : result.error === 'not_member'
         ? (user?.revoked_at ? REVOKED : NOT_MEMBER)
-        : 'Укажи имя устройства: латинские буквы, цифры и черточки (-), до 32 символов ([a-z0-9-]{1,32}). Например: /add phone')
+        : ADD_HINT)
     return
   }
 
@@ -289,10 +300,28 @@ async function resendOnce(ctx: AppContext, messenger: Messenger): Promise<number
 async function removeDevice(ctx: AppContext, messenger: Messenger, chatId: number, arg: string | undefined) {
   const row = arg ? findConfigByName(ctx.db, chatId, arg.toLowerCase()) : null
   if(!row || !revokeConfig(ctx, chatId, row.id)) {
-    await messenger.sendMessage(chatId, 'Устройства с таким именем нет :(')
+    await messenger.sendMessage(chatId, NO_SUCH_DEVICE)
     return
   }
   await messenger.sendMessage(chatId, 'Готово!')
+}
+
+/** R-A11: same rename as PATCH /v1/configs/{id}; nothing is resent since the conf doesn't change. */
+async function renameDevice(ctx: AppContext, messenger: Messenger, chatId: number, oldArg: string | undefined, newArg: string | undefined) {
+  const name = newArg?.toLowerCase()
+  if(!oldArg || !name) {
+    await messenger.sendMessage(chatId, RENAME_HINT)
+    return
+  }
+  const row = findConfigByName(ctx.db, chatId, oldArg.toLowerCase())
+  const result = row ? renameConfig(ctx, chatId, row.id, name) : { error: 'not_found' as const }
+  if('error' in result) {
+    await messenger.sendMessage(chatId, result.error === 'name_taken'
+      ? NAME_TAKEN
+      : result.error === 'not_found' ? NO_SUCH_DEVICE : RENAME_HINT)
+    return
+  }
+  await messenger.sendMessage(chatId, `Готово! Теперь устройство называется ${result.name}`)
 }
 
 async function sendLoginCode(ctx: AppContext, messenger: Messenger, chatId: number) {

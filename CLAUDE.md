@@ -42,8 +42,8 @@ Module map:
 - `db/index.ts` — SQLite schema with append-only migrations; every module uses the shared `Db` handle.
 - `types.ts` — shared domain types (node identity, rows).
 - `services/` — business logic shared by bot and API: `users` (keyed by Telegram id), `membership` (chat checks; Telegram errors are `unknown`, never `not-member`), `auth` (login codes, device tokens, rate limiting), `configs` (client config issuance/revocation, revisions), `identity` (per-site node keys, ports, obfuscation params).
-- `bot/` — `userCommands` (`/start`, `/info`, `/add`, `/remove`, `/login`, `/devices`), `adminCommands` (`/status`, `/apply`, `/trust`, `/rotate`, `/revoke_user`, `/backup`), `messenger` (thin Bot API seam for tests).
-- `api/server.ts` — fastify client API under `/v1` (`auth/login`, `auth/logout`, `me`, `configs` create/get/status/revoke) plus `/healthz`.
+- `bot/` — `userCommands` (`/start`, `/info`, `/add`, `/remove`, `/rename`, `/login`, `/devices`), `adminCommands` (`/status`, `/apply`, `/trust`, `/rotate`, `/revoke_user`, `/backup`), `messenger` (thin Bot API seam for tests).
+- `api/server.ts` — fastify client API under `/v1` (`auth/login`, `auth/logout`, `me`, `configs` create/get/status/rename/revoke) plus `/healthz`.
 - `render/` — `clientConfig` (client `.conf`) and `node/` (awg confs, nftables, sysctl, routing/systemd files for LOCAL and REMOTE).
 - `reconcile/` — `desired` (config + DB → files + `desiredHash`), `loop` (periodic and event-driven apply per node), `control` (interface the admin commands use).
 - `provision/` — `node` (bootstrap/apply over SSH), `scripts` (bash run on nodes: bootstrap, `apply.sh`; `SCRIPTS_VERSION`), `tar` (ustar writer for shipping the bundle via stdin).
