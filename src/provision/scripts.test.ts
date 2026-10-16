@@ -7,7 +7,7 @@ import type { RenderedFile } from '../types'
 import { NODE_PATHS } from '../render/node/input'
 import {
   applyCommand, applyScript, bootstrapScript, buildApplyBundle, disablePasswordScript,
-  installKeyScript, readMarkerCommand, renderMetaEnv, shellQuote, type ApplyMeta,
+  installKeyScript, readMarkerCommand, renderMetaEnv, retireScript, shellQuote, type ApplyMeta,
 } from './scripts'
 
 function bashSyntaxOk(script: string): void {
@@ -24,6 +24,7 @@ describe('script syntax', () => {
     bashSyntaxOk(applyScript())
     bashSyntaxOk(readMarkerCommand())
     bashSyntaxOk(applyCommand())
+    bashSyntaxOk(retireScript(['203.0.113.10', '203.0.113.11']))
   })
 
   it('bootstrap carries the runbook error strings', () => {
@@ -321,5 +322,45 @@ exit 0
     const again = run(remoteFiles, { ...meta, node: 'main/remote', role: 'remote', interfaces: ['awgt'] })
     expect(again.status).toBe(0)
     expect(again.calls.filter(c => /disable|daemon-reload|vpn-routing/.test(c))).toEqual([])
+  })
+})
+
+describe('retireScript', () => {
+  let tmp: string
+
+  function run(hostAddrs: string, current: string[]) {
+    const bin = path.join(tmp, 'bin')
+    const log = path.join(tmp, 'calls.log')
+    fs.mkdirSync(bin, { recursive: true })
+    fs.writeFileSync(path.join(bin, 'ip'), `#!/bin/sh\nfor a in ${hostAddrs}; do echo "2: eth0    inet $a/24 brd x scope global eth0"; done\n`, { mode: 0o755 })
+    for(const name of ['systemctl', 'rm']) {
+      fs.writeFileSync(path.join(bin, name), `#!/bin/sh\necho "${name} $*" >> ${log}\n`, { mode: 0o755 })
+    }
+    const r = spawnSync('bash', ['-s'], { input: retireScript(current), env: { PATH: `${bin}:${process.env.PATH}` } })
+    return { status: r.status, stdout: r.stdout.toString(), calls: fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : [] }
+  }
+
+  beforeEach(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'retire-test-')) })
+  afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }))
+
+  it('stops the interfaces and drops the marker on a replaced host', () => {
+    const r = run('198.51.100.7 198.51.100.8', ['203.0.113.10', '203.0.113.1'])
+    expect(r.status).toBe(0)
+    expect(r.stdout.trim()).toBe('RETIRED')
+    expect(r.calls).toEqual([
+      'systemctl disable --now awg-quick@awgc',
+      'systemctl disable --now awg-quick@awgt',
+      'systemctl disable --now vpn-routing',
+      `rm -f ${NODE_PATHS.marker}`,
+    ])
+  })
+
+  it('leaves the host alone when it still holds a current address', () => {
+    // 203.0.113.1 must not match 203.0.113.10: the prefix length follows the address.
+    const r = run('203.0.113.10 198.51.100.8', ['203.0.113.1', '203.0.113.10'])
+    expect(r.status).toBe(0)
+    expect(r.stdout.trim()).toBe('SAME_HOST')
+    expect(r.calls).toEqual([])
+    expect(run('203.0.113.10', ['203.0.113.1']).stdout.trim()).toBe('RETIRED')
   })
 })

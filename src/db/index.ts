@@ -114,6 +114,11 @@ const migrations: string[] = [
     PRIMARY KEY (chat_id, message_id)
   );
   `,
+  `
+  -- The address a node moved away from, until its old host is stopped (R-S3).
+  ALTER TABLE hosts ADD COLUMN retired_address TEXT;
+  ALTER TABLE hosts ADD COLUMN retired_at TEXT;
+  `,
 ]
 
 export function openDb(file: string): Db {

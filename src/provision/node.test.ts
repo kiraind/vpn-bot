@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest'
 import type { ConnectOptions, ExecOptions, ExecResult, SshSession } from '../ssh/client'
 import { SshAuthError } from '../ssh/client'
 import type { Db } from '../db'
-import { PROBE_COMMAND, probeNode, provisionNode } from './node'
+import { PROBE_COMMAND, probeNode, provisionNode, retireNode } from './node'
 import type { NodeTarget, ProvisionDeps, ProvisionPhase } from './node'
-import { applyCommand, readMarkerCommand } from './scripts'
+import { applyCommand, readMarkerCommand, retireScript } from './scripts'
 
 const PUBLIC_KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ1bG7rQ8Yq6xYzVg0Wl7s9b2b2b2b2b2b2b2b2b2b2b vpn-coordinator'
 
@@ -249,5 +249,27 @@ describe('probeNode', () => {
     const probe = await probeNode(deps(w), target)
     expect(probe.reachable).toBe(true)
     expect(probe.nowSec).toBeUndefined()
+  })
+})
+
+describe('retireNode', () => {
+  const old = { host: '198.51.100.99', ssh: target.ssh }
+
+  it('runs the retire script by key only and reports the outcome', async () => {
+    const w = world([{ respond: () => ({ stdout: 'RETIRED\n' }) }])
+    expect(await retireNode(deps(w), old, ['203.0.113.10'])).toBe('retired')
+    expect(w.connects[0]).toMatchObject({ host: '198.51.100.99', port: 2222, privateKey: 'PRIV', password: undefined })
+    expect(w.calls).toEqual([{ session: 0, cmd: 'bash -s', stdin: retireScript(['203.0.113.10']) }])
+    expect(w.closed).toEqual([0])
+
+    const same = world([{ respond: () => ({ stdout: 'SAME_HOST\n' }) }])
+    expect(await retireNode(deps(same), old, ['203.0.113.10'])).toBe('same-host')
+  })
+
+  it('throws when the host is unreachable or the script does not confirm', async () => {
+    await expect(retireNode(deps(world([new Error('ssh timeout for 198.51.100.99: x')])), old, [])).rejects.toThrow('ssh timeout')
+    const silent = world([{ respond: () => ({ stdout: '' }) }])
+    await expect(retireNode(deps(silent), old, [])).rejects.toThrow('retire failed')
+    expect(silent.closed).toEqual([0])
   })
 })

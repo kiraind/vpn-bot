@@ -93,6 +93,8 @@ export interface HostRow {
   health: string
   health_checked_at: string | null
   health_detail: string | null
+  retired_address: string | null
+  retired_at: string | null
 }
 
 /** A file in a node's desired state (section 7.1). Paths are absolute on the node. */
