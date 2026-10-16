@@ -2,7 +2,8 @@ import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, ty
 import type { AppContext } from '../context'
 import { LoginRateLimiter, authenticateToken, redeemLoginCode, revokeToken } from '../services/auth'
 import {
-  configStatus, configSummary, configView, createConfig, getOwnConfig, listConfigs, markDelivered, revokeConfig,
+  configStatus, configSummary, configView, createConfig, getOwnConfig, listConfigs, markDelivered, renameConfig,
+  revokeConfig,
 } from '../services/configs'
 import { ensureMemberFresh, type MemberChecker } from '../services/membership'
 
@@ -187,6 +188,27 @@ export function buildApi(ctx: AppContext, deps: ApiDeps): FastifyInstance {
         const row = getOwnConfig(ctx.db, req.auth!.tgId, req.params.id)
         if(!row) throw new ApiError(404, 'not_found')
         return configStatus(ctx, row, req.query.revision)
+      })
+
+      // R-A11: rename only; the revision does not change, so the app needs no refetch
+      authed.patch<{ Params: { id: string }, Body: { name: string } }>('/configs/:id', {
+        schema: {
+          params: idParams,
+          body: {
+            type: 'object',
+            required: ['name'],
+            // The name pattern is checked by renameConfig so it comes back as invalid_name, not invalid_request
+            properties: { name: { type: 'string' } },
+          },
+        },
+      }, async (req, reply) => {
+        const row = renameConfig(ctx, req.auth!.tgId, req.params.id, req.body.name)
+        if('error' in row) {
+          if(row.error === 'name_taken') return send(reply, 409, 'name_taken')
+          if(row.error === 'not_found') return send(reply, 404, 'not_found')
+          return send(reply, 400, 'invalid_name')
+        }
+        return configSummary(ctx, row)
       })
 
       authed.delete<{ Params: { id: string } }>('/configs/:id', { schema: { params: idParams } }, async (req, reply) => {

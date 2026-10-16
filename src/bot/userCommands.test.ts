@@ -221,6 +221,30 @@ describe('/remove', () => {
   })
 })
 
+describe('/rename', () => {
+  it('renames own device, explains unknown, taken and invalid names', async () => {
+    const t = setup()
+    upsertUser(t.ctx.db, ALICE, null)
+    const row = create(t.ctx, 'android')
+    create(t.ctx, 'laptop')
+    await t.send('/rename nope pixel')
+    await t.send('/rename android laptop')
+    await t.send('/rename android bad_name')
+    await t.send('/rename android')
+    await t.send('/rename Android Pixel-8')
+    const texts = t.texts()
+    expect(texts.slice(0, 2)).toEqual(['Устройства с таким именем нет :(', 'Устройство с таким именем уже есть'])
+    for(const hint of texts.slice(2, 4)) {
+      expect(hint).toContain('[a-z0-9-]{1,32}')
+      expect(hint).toContain('/rename android pixel-8')
+    }
+    expect(texts[4]).toBe('Готово! Теперь устройство называется pixel-8')
+    expect(getOwnConfig(t.ctx.db, ALICE, row.id)?.name).toBe('pixel-8')
+    // Nothing is resent: the conf itself didn't change
+    expect(t.of('sendDocument')).toEqual([])
+  })
+})
+
 describe('/login', () => {
   it('replies with a one-time code', async () => {
     const t = setup()

@@ -69,6 +69,24 @@ export function revokeConfig(ctx: AppContext, tgId: number, id: string): boolean
   return changes > 0
 }
 
+export type RenameConfigError = 'invalid_name' | 'name_taken' | 'not_found'
+
+/**
+ * R-A11: renames the owner's own live (non-revoked) config. The name is in neither the rendered
+ * conf nor clientRevision, so nothing reaches the nodes and the revision stays the same.
+ */
+export function renameConfig(ctx: AppContext, tgId: number, id: string, name: string): ClientConfigRow | { error: RenameConfigError } {
+  if(!NAME_RE.test(name)) return { error: 'invalid_name' }
+  return ctx.db.transaction((): ClientConfigRow | { error: RenameConfigError } => {
+    const row = getOwnConfig(ctx.db, tgId, id)
+    if(!row || row.state === 'revoked') return { error: 'not_found' }
+    if(row.name === name) return row
+    if(findConfigByName(ctx.db, tgId, name)) return { error: 'name_taken' }
+    ctx.db.prepare('UPDATE client_configs SET name = ? WHERE id = ?').run(name, id)
+    return getConfig(ctx.db, id)!
+  })()
+}
+
 function getConfig(db: Db, id: string): ClientConfigRow | null {
   return (db.prepare('SELECT * FROM client_configs WHERE id = ?').get(id) as ClientConfigRow | undefined) ?? null
 }

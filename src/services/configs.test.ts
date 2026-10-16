@@ -8,7 +8,7 @@ import { ensureSiteIdentities, rotateParams } from './identity'
 import { exampleConfig } from './testFixtures'
 import {
   activePeers, allocateAddress, configStatus, configSummary, configView, createConfig, findConfigByName,
-  getOwnConfig, listConfigs, markDelivered, NAME_RE, revokeConfig, staleBotConfigs,
+  getOwnConfig, listConfigs, markDelivered, NAME_RE, renameConfig, revokeConfig, staleBotConfigs,
 } from './configs'
 
 function makeCtx(patch: (c: CoordinatorConfig) => CoordinatorConfig = c => c): AppContext {
@@ -41,6 +41,57 @@ describe('names', () => {
     expect('error' in createConfig(ctx, { tgId: 2, name: 'phone', issuedVia: 'api' })).toBe(false)
     expect(revokeConfig(ctx, 1, row.id)).toBe(true)
     expect(create(ctx, 1, 'phone').id).not.toBe(row.id)
+  })
+})
+
+describe('renameConfig (R-A11)', () => {
+  it('renames without touching the revision or the nodes', () => {
+    const ctx = makeCtx()
+    const row = create(ctx, 1, 'android')
+    const revision = configSummary(ctx, row).revision
+    const spy = vi.fn()
+    ctx.events.on('peers-changed', spy)
+    const renamed = renameConfig(ctx, 1, row.id, 'pixel-8')
+    expect(renamed).toMatchObject({ id: row.id, name: 'pixel-8', address: row.address, state: 'active' })
+    expect(configSummary(ctx, renamed as ClientConfigRow).revision).toBe(revision)
+    expect(findConfigByName(ctx.db, 1, 'android')).toBeNull()
+    expect(findConfigByName(ctx.db, 1, 'pixel-8')?.id).toBe(row.id)
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('renaming to the current name is a no-op', () => {
+    const ctx = makeCtx()
+    const row = create(ctx, 1, 'phone')
+    expect(renameConfig(ctx, 1, row.id, 'phone')).toEqual(row)
+  })
+
+  it('refuses taken and invalid names', () => {
+    const ctx = makeCtx()
+    const a = create(ctx, 1, 'a')
+    create(ctx, 1, 'b')
+    create(ctx, 2, 'c')
+    expect(renameConfig(ctx, 1, a.id, 'b')).toEqual({ error: 'name_taken' })
+    expect(renameConfig(ctx, 1, a.id, 'Bad!')).toEqual({ error: 'invalid_name' })
+    expect(renameConfig(ctx, 1, a.id, '')).toEqual({ error: 'invalid_name' })
+    // Another user's name and a revoked config's name are free
+    expect(renameConfig(ctx, 1, a.id, 'c')).toMatchObject({ name: 'c' })
+    const d = create(ctx, 1, 'd')
+    revokeConfig(ctx, 1, d.id)
+    expect(renameConfig(ctx, 1, a.id, 'd')).toMatchObject({ name: 'd' })
+  })
+
+  it("not_found for someone else's, revoked and unknown configs; suspended ones can be renamed", () => {
+    const ctx = makeCtx()
+    const bobs = create(ctx, 2, 'phone')
+    expect(renameConfig(ctx, 1, bobs.id, 'mine')).toEqual({ error: 'not_found' })
+    expect(getOwnConfig(ctx.db, 2, bobs.id)?.name).toBe('phone')
+    const row = create(ctx, 1, 'old')
+    revokeConfig(ctx, 1, row.id)
+    expect(renameConfig(ctx, 1, row.id, 'new')).toEqual({ error: 'not_found' })
+    expect(renameConfig(ctx, 1, 'nope', 'new')).toEqual({ error: 'not_found' })
+    const suspended = create(ctx, 1, 'tablet')
+    ctx.db.prepare(`UPDATE client_configs SET state = 'suspended' WHERE id = ?`).run(suspended.id)
+    expect(renameConfig(ctx, 1, suspended.id, 'ipad')).toMatchObject({ name: 'ipad', state: 'suspended' })
   })
 })
 
