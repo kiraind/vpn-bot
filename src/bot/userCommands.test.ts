@@ -300,7 +300,8 @@ describe('resendStaleBotConfigs', () => {
 
     rotateParams(t.ctx.db, 'main', 'clients')
     expect(await resendStaleBotConfigs(t.ctx, t.messenger)).toBe(1)
-    expect(t.texts()[0]).toBe('Конфигурация сервера изменилась, вот обновлённый конфиг для phone. Старый больше не работает.')
+    expect(t.texts()[0]).toBe('Конфигурация сервера изменилась, вот обновлённый конфиг для phone. Старый больше не работает.\n\n'
+      + 'Чтобы конфиги обновлялись автоматически, используйте приложение Лёша VPN.')
     expect(t.of('sendDocument')).toHaveLength(1)
     expect(await resendStaleBotConfigs(t.ctx, t.messenger)).toBe(0)
   })
