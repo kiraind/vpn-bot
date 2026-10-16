@@ -1,11 +1,11 @@
 import type { AlertOptions, AppContext } from '../context'
 import type { SiteConfig } from '../config/schema'
-import type { NodeTarget, ProvisionDeps, ProvisionPhase, probeNode, provisionNode } from '../provision/node'
+import type { NodeTarget, ProvisionDeps, ProvisionPhase, probeNode, provisionNode, retireNode } from '../provision/node'
 import type { HostRow, NodeRole } from '../types'
 import { nodeName } from '../types'
 import { ensureSiteIdentities, rotateParams, syncProtocols } from '../services/identity'
 import { trustAddress } from '../ssh/knownHosts'
-import { HostKeyMismatchError } from '../ssh/client'
+import { HostKeyMismatchError, SshAuthError } from '../ssh/client'
 import { Debouncer, evaluateSite, persistSiteHealth, readSiteNetwork, type NodeProbe } from '../health/evaluate'
 import { notifyTransition } from '../health/notify'
 import { getGeoSet, isGeoSetStale, updateGeoSet } from '../geo/store'
@@ -22,6 +22,8 @@ export const EVENT_DEBOUNCE_MS = 1000
 export const BACKOFF_CAP_MIN = 30
 /** A failed or refused geo download is retried at most this often (it's ~30 MB each time). */
 export const GEO_RETRY_MS = 24 * 60 * 60_000
+/** How long an unreachable replaced host is retried before it's assumed gone (R-S3). */
+export const RETIRE_GIVE_UP_MS = 24 * 60 * 60_000
 
 /** Minutes to wait after the n-th consecutive failure (n ≥ 1): 1, 2, 4, … capped at 30 (R-P3). */
 export function backoffMinutes(failures: number): number {
@@ -48,6 +50,8 @@ export class NodeLock {
 export interface ReconcilerDeps {
   provision: typeof provisionNode
   probe: typeof probeNode
+  /** Stops a replaced host; without it old hosts are left running. */
+  retire?: typeof retireNode
   provisionDeps: ProvisionDeps
   /** Re-reads config.yaml; on success ctx.config() returns the new config. */
   reloadConfig: () => { ok: boolean, errors?: string[] }
@@ -108,6 +112,8 @@ export class Reconciler implements ReconcilerControl {
   private readonly renderErrors = new Map<string, string>()
   /** Geo per country: when the last failed/refused attempt was, and the reason last alerted. */
   private readonly geoAttempts = new Map<string, { failedAt: number, alerted: string }>()
+  /** Nodes whose old host already got a "could not stop" alert in this process. */
+  private readonly retireAlerted = new Set<string>()
   private timers: NodeJS.Timeout[] = []
   private eventTimer: NodeJS.Timeout | null = null
   private eventNodes = new Set<string>()
@@ -305,17 +311,20 @@ export class Reconciler implements ReconcilerControl {
     return this.ctx.db.prepare('SELECT * FROM hosts WHERE node = ?').get(node) as HostRow | undefined
   }
 
-  // Creates the row on first sight; a new address means a new machine, so its backoff starts over.
+  // Creates the row on first sight; a new address means a new machine, so its backoff starts over
+  // and the old one is queued to be stopped (R-S3). Moving back to the old address cancels that.
   private syncHostAddress(target: NodeTarget): HostRow {
     const db = this.ctx.db
     const row = this.getHost(target.node)
     if(!row) {
       db.prepare('INSERT INTO hosts (node, address) VALUES (?, ?)').run(target.node, target.host)
     } else if(row.address !== target.host) {
+      const retired = row.applied_hash ? row.address : row.retired_address
       db.prepare(`
-        UPDATE hosts SET address = ?, applied_hash = NULL, consecutive_failures = 0, next_attempt_at = NULL, phase = 'pending'
+        UPDATE hosts SET address = ?, applied_hash = NULL, consecutive_failures = 0, next_attempt_at = NULL, phase = 'pending',
+          retired_address = ?, retired_at = ?
         WHERE node = ?
-      `).run(target.host, target.node)
+      `).run(target.host, retired === target.host ? null : retired, retired === target.host ? null : this.now().toISOString(), target.node)
     }
     return this.getHost(target.node)!
   }
@@ -350,6 +359,7 @@ export class Reconciler implements ReconcilerControl {
       `).run(target.hash, this.now().toISOString(), target.node)
       if(prev.consecutive_failures > 0) this.alert(`${target.node}: снова в порядке`)
       if(result.outcome === 'applied' && target.role === 'local') this.ctx.events.emit('local-applied', target.node)
+      if(prev.retired_address) await this.retireOld(target, prev)
       return { node: target.node, outcome: result.outcome }
     } catch(err) {
       const message = errorMessage(err)
@@ -365,6 +375,35 @@ export class Reconciler implements ReconcilerControl {
       const newMismatch = isHostKeyMismatch(err) && prev.last_error !== message
       if(failures === 1 || newMismatch) this.alert(this.failureAlert(target, err, lastPhase))
       return { node: target.node, outcome: 'error', message }
+    }
+  }
+
+  // R-S3: the replaced host still has the node's keys and would keep resetting the new host's
+  // sessions with every handshake, so it is stopped once the new one is up. A host that now
+  // refuses our key or shows another host key is someone else's: nothing to stop.
+  private async retireOld(target: NodeTarget, row: HostRow) {
+    const retire = this.deps.retire
+    const old = row.retired_address
+    if(!retire || !old) return
+    const clear = () => this.ctx.db.prepare('UPDATE hosts SET retired_address = NULL, retired_at = NULL WHERE node = ?').run(target.node)
+
+    try {
+      const result = await retire(this.deps.provisionDeps, { host: old, ssh: target.ssh }, target.addresses)
+      clear()
+      this.retireAlerted.delete(target.node)
+      if(result === 'retired') this.alert(`${target.node}: на старом сервере ${old} остановлен AWG, его можно удалять`)
+    } catch(err) {
+      if(isHostKeyMismatch(err) || err instanceof SshAuthError || (err instanceof Error && err.name === 'SshAuthError')) {
+        clear()
+        return
+      }
+      const since = row.retired_at ? Date.parse(row.retired_at) : this.now().getTime()
+      if(this.now().getTime() - since >= RETIRE_GIVE_UP_MS) clear()
+      if(!this.retireAlerted.has(target.node)) {
+        this.retireAlerted.add(target.node)
+        this.alert(`${target.node}: не удалось остановить AWG на старом сервере ${old}: ${errorMessage(err)}\n`
+          + 'Если он ещё работает, выключите его: у него те же ключи, и он мешает новому серверу. Координатор будет пробовать ещё сутки.')
+      }
     }
   }
 

@@ -173,6 +173,31 @@ export function readMarkerCommand(): string {
   return `cat ${NODE_PATHS.marker} 2>/dev/null || echo '{}'`
 }
 
+/** Line the retire script prints when the old address still reaches the current host. */
+export const SAME_HOST = 'SAME_HOST'
+/** Line the retire script prints once the old host's interfaces are stopped. */
+export const RETIRED = 'RETIRED'
+
+/**
+ * Stops a replaced host (R-S3): it still holds the node's keys, so a running copy keeps
+ * handshaking with the peers and resets the new host's sessions every rekey. Skipped when the
+ * old address still reaches the current host (an IP swapped on the same machine, runbook 3.3).
+ * The marker goes too, so pointing the config back at this machine re-applies it.
+ */
+export function retireScript(currentAddresses: string[]): string {
+  // Captured first: with pipefail, grep -q closing the pipe early could fail `ip` and hide a match.
+  return wrapMain('', `addrs=$(ip -4 -o addr show)
+for a in ${currentAddresses.map(shellQuote).join(' ')}; do
+  if grep -qF "inet $a/" <<<"$addrs"; then echo ${SAME_HOST}; exit 0; fi
+done
+for unit in awg-quick@awgc awg-quick@awgt vpn-routing; do
+  systemctl disable --now "$unit" >/dev/null 2>&1 || true
+done
+rm -f ${NODE_PATHS.marker}
+echo ${RETIRED}
+`)
+}
+
 /** Remote command reading the bundle tar from stdin into a fresh stage and running apply.sh. */
 export function applyCommand(): string {
   return `set -e; d=$(mktemp -d /tmp/vpn-apply.XXXXXX); tar -xf - -o -C "$d"; exec bash "$d/apply.sh" "$d"`

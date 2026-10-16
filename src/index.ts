@@ -14,7 +14,7 @@ import { drainPendingDeletions, handleUserCallback, handleUserMessage, resendSta
 import { handleAdminCallback, handleAdminCommand, sendDailyBackup } from './bot/adminCommands'
 import { createBackup } from './ops/backup'
 import { Reconciler } from './reconcile/loop'
-import { probeNode, provisionNode } from './provision/node'
+import { probeNode, provisionNode, retireNode } from './provision/node'
 import { fetchCountryCidrs } from './geo/dbip'
 
 // Resolved at runtime so it works from both src/ (tsx) and dist/ without pulling package.json into rootDir.
@@ -74,6 +74,7 @@ async function main() {
   const reconciler = new Reconciler(ctx, {
     provision: provisionNode,
     probe: probeNode,
+    retire: retireNode,
     provisionDeps: { db, key, coordinatorVersion, log: msg => console.log(msg) },
     log: msg => console.error(msg),
     reloadConfig: () => watcher.reload(),

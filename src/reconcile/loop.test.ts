@@ -5,13 +5,13 @@ import type { CoordinatorConfig } from '../config/schema'
 import type { NodeTarget, ProvisionDeps, ProvisionResult } from '../provision/node'
 import type { NodeProbe } from '../health/evaluate'
 import type { HostRow } from '../types'
-import { HostKeyMismatchError } from '../ssh/client'
+import { HostKeyMismatchError, SshAuthError } from '../ssh/client'
 import { ensureSiteIdentities } from '../services/identity'
 import { createConfig } from '../services/configs'
 import { upsertUser } from '../services/users'
 import { exampleConfig } from '../services/testFixtures'
 import { getGeoSet, updateGeoSet } from '../geo/store'
-import { backoffMinutes, NodeLock, Reconciler, type ReconcilerDeps } from './loop'
+import { backoffMinutes, NodeLock, Reconciler, RETIRE_GIVE_UP_MS, type ReconcilerDeps } from './loop'
 
 const T0 = new Date('2026-10-12T00:00:00Z')
 
@@ -488,5 +488,92 @@ describe('geo', () => {
     expect(await h.rec.refreshGeo()).toEqual([])
     expect(h.alerts[0].text).toMatch(/empty set/)
     expect(updateGeoSet(h.ctx.db, 'RU', ['1.0.0.0/8'], 'x').updated).toBe(true)
+  })
+})
+
+describe('retiring a replaced host (R-S3)', () => {
+  function moved(retire: ReturnType<typeof vi.fn>) {
+    const h = setup({ retire: retire as unknown as ReconcilerDeps['retire'] })
+    return { h, local: h.ctx.config().sites[0].local }
+  }
+
+  it('stops the old host once the new one is applied, and only then', async () => {
+    const retire = vi.fn(async () => 'retired' as const)
+    const { h, local } = moved(retire)
+    await h.rec.runCycle()
+    const oldOuter = local.addresses.outer
+    expect(retire).not.toHaveBeenCalled()
+
+    local.addresses.outer = '192.0.2.77'
+    h.provision.mockRejectedValueOnce(new Error('apt failed'))
+    await h.rec.runCycle({ nodes: new Set(['main/local']) })
+    expect(retire).not.toHaveBeenCalled()
+    expect(h.host('main/local')).toMatchObject({ retired_address: oldOuter, retired_at: T0.toISOString() })
+
+    await h.rec.applyNow()
+    expect(retire).toHaveBeenCalledTimes(1)
+    const [, old, current] = retire.mock.calls[0] as unknown as [unknown, { host: string }, string[]]
+    expect(old.host).toBe(oldOuter)
+    expect(current).toContain('192.0.2.77')
+    expect(h.host('main/local')).toMatchObject({ retired_address: null, retired_at: null })
+    expect(h.alerts.map(a => a.text)).toContain(`main/local: на старом сервере ${oldOuter} остановлен AWG, его можно удалять`)
+
+    await h.rec.applyNow()
+    expect(retire).toHaveBeenCalledTimes(1)
+  })
+
+  it('says nothing when the old address still reaches the same machine', async () => {
+    const retire = vi.fn(async () => 'same-host' as const)
+    const { h, local } = moved(retire)
+    await h.rec.runCycle()
+    local.addresses.outer = '192.0.2.77'
+    await h.rec.runCycle()
+    expect(retire).toHaveBeenCalledTimes(1)
+    expect(h.alerts).toEqual([])
+    expect(h.host('main/local').retired_address).toBeNull()
+  })
+
+  it('forgets the old host when moving back to it before it was stopped', async () => {
+    const retire = vi.fn(async () => 'retired' as const)
+    const { h, local } = moved(retire)
+    await h.rec.runCycle()
+    const oldOuter = local.addresses.outer
+    h.provision.mockRejectedValue(new Error('down'))
+    local.addresses.outer = '192.0.2.77'
+    await h.rec.applyNow()
+    local.addresses.outer = oldOuter
+    await h.rec.applyNow()
+    expect(h.host('main/local')).toMatchObject({ address: oldOuter, retired_address: null })
+  })
+
+  it('retries an unreachable old host with one alert, then gives up after a day', async () => {
+    const retire = vi.fn(async () => { throw new Error('ssh timeout for 203.0.113.10: x') })
+    const { h, local } = moved(retire)
+    await h.rec.runCycle()
+    local.addresses.outer = '192.0.2.77'
+    await h.rec.runCycle()
+    await h.rec.runCycle()
+    expect(retire).toHaveBeenCalledTimes(2)
+    const warnings = h.alerts.filter(a => a.text.includes('не удалось остановить AWG'))
+    expect(warnings).toHaveLength(1)
+    expect(h.host('main/local').retired_address).not.toBeNull()
+
+    h.clock.now = new Date(T0.getTime() + RETIRE_GIVE_UP_MS)
+    await h.rec.runCycle()
+    expect(h.host('main/local').retired_address).toBeNull()
+    await h.rec.runCycle()
+    expect(retire).toHaveBeenCalledTimes(3)
+  })
+
+  it('drops a host that no longer accepts our key or shows another host key', async () => {
+    for(const err of [new SshAuthError('203.0.113.10', 'denied'), new HostKeyMismatchError('203.0.113.10', 'SHA256:x')]) {
+      const retire = vi.fn(async () => { throw err })
+      const { h, local } = moved(retire)
+      await h.rec.runCycle()
+      local.addresses.outer = '192.0.2.77'
+      await h.rec.runCycle()
+      expect(h.host('main/local').retired_address).toBeNull()
+      expect(h.alerts).toEqual([])
+    }
   })
 })

@@ -10,12 +10,15 @@ import {
   BOOTSTRAP_OK,
   EXIT_CODES,
   REBOOT_REQUIRED,
+  RETIRED,
+  SAME_HOST,
   applyCommand,
   bootstrapScript,
   buildApplyBundle,
   disablePasswordScript,
   installKeyScript,
   readMarkerCommand,
+  retireScript,
 } from './scripts'
 
 export interface NodeTarget {
@@ -231,6 +234,27 @@ export async function provisionNode(deps: ProvisionDeps, target: NodeTarget, opt
     return { outcome: 'up-to-date', bootstrapped: false }
   } finally {
     for(const s of opened) s.close()
+  }
+}
+
+/**
+ * Stops the interfaces of a host the node moved away from (R-S3), see retireScript. Key login
+ * only: the password in the config belongs to the new host. Throws on any SSH or script failure.
+ */
+export async function retireNode(
+  deps: ProvisionDeps,
+  old: Pick<NodeTarget, 'host' | 'ssh'>,
+  currentAddresses: string[],
+): Promise<'retired' | 'same-host'> {
+  const connect = deps.connect ?? connectSsh
+  const session = await connect({ ...connectOptions(deps, old), password: undefined })
+  try {
+    const res = await session.run('bash -s', { stdin: retireScript(currentAddresses), timeoutMs: 60_000 })
+    if(res.stdout.includes(SAME_HOST)) return 'same-host'
+    if(!res.stdout.includes(RETIRED)) throw new Error(`retire failed: ${tail(res.stdout)}`)
+    return 'retired'
+  } finally {
+    session.close()
   }
 }
 
